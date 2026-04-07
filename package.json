@@ -1,0 +1,23 @@
+{
+  "name": "ecc-dms",
+  "version": "1.0.0",
+  "description": "ECC Tuned Dealer Management System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["ecc", "tuning", "dealer", "dms"],
+  "author": "ECC Software",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.8.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.1",
+    "uuid": "^13.0.0"
+  }
+}

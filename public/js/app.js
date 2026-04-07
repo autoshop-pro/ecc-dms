@@ -1969,6 +1969,39 @@ async function loadManageCatalog() {
           <h1 class="page-title">Manage Catalog</h1>
           <p class="page-subtitle">Products, kits & bundles</p>
         </div>
+        <button class="btn btn-secondary" onclick="toggleCsvImport()">📄 Import CSV</button>
+      </div>
+
+      <!-- CSV IMPORT SECTION -->
+      <div id="csvImportArea" style="display:none;margin-bottom:24px;">
+        <div class="card">
+          <div class="card-header"><h3>Import Products from CSV</h3></div>
+          <div class="card-body">
+            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">
+              Upload a CSV file to bulk-add or update performance hardware products.
+              <a href="#" onclick="downloadCsvTemplate(); return false;" style="color:var(--primary);font-weight:500;">Download template CSV</a>
+            </p>
+            <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
+              Required columns: <strong>name</strong>.
+              Optional: sku, description, category, product_type (tools/hardware), base_price, dealer_price, distributor_price, stock_qty
+            </p>
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+              <div class="form-group" style="flex:1;min-width:200px;margin-bottom:0;">
+                <label class="form-label">CSV File</label>
+                <input type="file" id="csvFileInput" accept=".csv" class="form-control">
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">Import Mode</label>
+                <select id="csvImportMode" class="form-control" style="width:180px;">
+                  <option value="add">Add new only</option>
+                  <option value="upsert">Update existing by SKU</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" onclick="uploadCsvProducts()">Upload & Import</button>
+            </div>
+            <div id="csvImportResults" style="margin-top:12px;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- KITS SECTION -->
@@ -2255,6 +2288,64 @@ async function saveProduct() {
     }
     loadManageCatalog();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- CSV IMPORT ----
+function toggleCsvImport() {
+  const area = document.getElementById('csvImportArea');
+  area.style.display = area.style.display === 'none' ? 'block' : 'none';
+}
+
+function downloadCsvTemplate() {
+  downloadFile('/api/hardware/csv-template', 'ecc-hardware-template.csv');
+}
+
+async function uploadCsvProducts() {
+  const fileInput = document.getElementById('csvFileInput');
+  const mode = document.getElementById('csvImportMode').value;
+  const resultsDiv = document.getElementById('csvImportResults');
+
+  if (!fileInput.files.length) {
+    toast('Select a CSV file first', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('mode', mode);
+
+  resultsDiv.innerHTML = '<span class="spinner"></span> Importing...';
+
+  try {
+    const data = await api('POST', '/api/hardware/import-csv', formData, true);
+
+    let html = `
+      <div style="padding:12px;background:var(--bg-hover);border-radius:8px;">
+        <strong style="color:#81c784;">✓ ${data.message}</strong>
+        <div style="margin-top:8px;font-size:13px;color:var(--text-secondary);">
+          Total rows: ${data.total_rows} | Added: ${data.inserted} | Updated: ${data.updated} | Skipped: ${data.skipped}
+        </div>
+    `;
+
+    if (data.errors && data.errors.length) {
+      html += `
+        <div style="margin-top:8px;font-size:12px;color:#ef5350;">
+          <strong>Issues:</strong><br>
+          ${data.errors.map(e => `• ${e}`).join('<br>')}
+        </div>
+      `;
+    }
+
+    html += '</div>';
+    resultsDiv.innerHTML = html;
+
+    // Reload the catalog to show new products
+    if (data.inserted > 0 || data.updated > 0) {
+      setTimeout(() => loadManageCatalog(), 1500);
+    }
+  } catch (err) {
+    resultsDiv.innerHTML = `<div style="padding:12px;background:rgba(239,83,80,0.1);border-radius:8px;color:#ef5350;"><strong>Error:</strong> ${err.message}</div>`;
+  }
 }
 
 // ---- ACCOUNT & BILLING ----

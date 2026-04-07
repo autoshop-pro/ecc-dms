@@ -1,9 +1,61 @@
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
 const { getDb, generateHardwareOrderNumber } = require('../database');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
+
+// CSV upload config (store in memory for parsing)
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'));
+    }
+  }
+});
+
+// Simple CSV parser (handles quoted fields with commas)
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return { headers: [], rows: [] };
+
+  function parseLine(line) {
+    const fields = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+        else { inQuotes = !inQuotes; }
+      } else if (ch === ',' && !inQuotes) {
+        fields.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    fields.push(current.trim());
+    return fields;
+  }
+
+  const headers = parseLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, '_'));
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseLine(lines[i]);
+    if (vals.length < 2) continue; // skip empty/malformed rows
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+    rows.push(row);
+  }
+  return { headers, rows };
+}
 
 // GET /api/hardware - list products (pricing based on dealer role)
 // Query params: ?type=tools|hardware  (optional filter by product_type)
@@ -18,7 +70,7 @@ router.get('/', authenticateToken, (req, res) => {
   }
 
   // Return role-appropriate pricing
-  const role = req.dealer.role || 'dealer';
+  const role = (req.dealer && req.dealer.role) || 'dealer';
   const mapped = products.map(p => ({
     ...p,
     your_price: role === 'distributor' ? p.distributor_price : p.dealer_price,
@@ -313,6 +365,122 @@ router.post('/order', authenticateToken, (req, res) => {
 
   const order = db.prepare('SELECT * FROM hardware_orders WHERE id = ?').get(orderId);
   res.status(201).json({ order });
+});
+
+// GET /api/hardware/csv-template - download a blank CSV template
+router.get('/csv-template', authenticateToken, (req, res) => {
+  if (!req.dealer || (!req.dealer.is_admin && req.dealer.role !== 'distributor')) {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+
+  const csv = [
+    'name,sku,description,category,product_type,base_price,dealer_price,distributor_price,stock_qty',
+    '"ECC GPF/OPF Emulator","ECC-GPF-02","Gasoline particulate filter emulator module v2","Emulators","hardware",199,149,119,50',
+    '"ECC Lambda Sensor Emulator","ECC-LAM-01","Wideband lambda sensor signal emulator","Emulators","hardware",159,119,99,30',
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="ecc-hardware-template.csv"');
+  res.send(csv);
+});
+
+// POST /api/hardware/import-csv - bulk import products from CSV
+router.post('/import-csv', authenticateToken, csvUpload.single('file'), (req, res) => {
+  if (!req.dealer || (!req.dealer.is_admin && req.dealer.role !== 'distributor')) {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+
+  if (!req.file) return res.status(400).json({ error: 'No CSV file uploaded' });
+
+  const text = req.file.buffer.toString('utf-8');
+  const { headers, rows } = parseCSV(text);
+
+  if (!rows.length) {
+    return res.status(400).json({ error: 'CSV file is empty or has no data rows' });
+  }
+
+  // Validate required columns
+  const requiredCols = ['name'];
+  const missing = requiredCols.filter(c => !headers.includes(c));
+  if (missing.length) {
+    return res.status(400).json({ error: `Missing required columns: ${missing.join(', ')}. Required: name. Optional: sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty` });
+  }
+
+  const db = getDb();
+  const mode = req.body.mode || 'add'; // 'add' = insert new only, 'upsert' = update by SKU if exists
+
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  const errors = [];
+
+  const insertStmt = db.prepare(`
+    INSERT INTO hardware_products (id, name, sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const updateStmt = db.prepare(`
+    UPDATE hardware_products SET name=?, description=?, category=?, product_type=?, base_price=?, dealer_price=?, distributor_price=?,
+      stock_qty=?, updated_at=datetime('now')
+    WHERE sku = ?
+  `);
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowNum = i + 2; // account for header + 0-index
+
+    if (!r.name) {
+      errors.push(`Row ${rowNum}: missing name, skipped`);
+      skipped++;
+      continue;
+    }
+
+    const name = r.name;
+    const sku = r.sku || null;
+    const description = r.description || '';
+    const category = r.category || 'Uncategorized';
+    const productType = r.product_type || 'hardware';
+    const basePrice = parseFloat(r.base_price) || 0;
+    const dealerPrice = parseFloat(r.dealer_price) || 0;
+    const distributorPrice = parseFloat(r.distributor_price) || 0;
+    const stockQty = parseInt(r.stock_qty) || 0;
+
+    try {
+      if (mode === 'upsert' && sku) {
+        const existing = db.prepare('SELECT id FROM hardware_products WHERE sku = ?').get(sku);
+        if (existing) {
+          updateStmt.run(name, description, category, productType, basePrice, dealerPrice, distributorPrice, stockQty, sku);
+          updated++;
+          continue;
+        }
+      }
+
+      // Check for duplicate SKU on insert
+      if (sku) {
+        const existing = db.prepare('SELECT id FROM hardware_products WHERE sku = ?').get(sku);
+        if (existing) {
+          errors.push(`Row ${rowNum}: SKU "${sku}" already exists, skipped`);
+          skipped++;
+          continue;
+        }
+      }
+
+      insertStmt.run(uuidv4(), name, sku, description, category, productType, basePrice, dealerPrice, distributorPrice, stockQty);
+      inserted++;
+    } catch (err) {
+      errors.push(`Row ${rowNum}: ${err.message}`);
+      skipped++;
+    }
+  }
+
+  res.json({
+    message: `Import complete: ${inserted} added, ${updated} updated, ${skipped} skipped`,
+    inserted,
+    updated,
+    skipped,
+    total_rows: rows.length,
+    errors: errors.length ? errors : undefined
+  });
 });
 
 module.exports = router;

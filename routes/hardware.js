@@ -21,6 +21,115 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ products: mapped });
 });
 
+// GET /api/hardware/kits - list kits with included products
+router.get('/kits', authenticateToken, (req, res) => {
+  const db = getDb();
+  const kits = db.prepare('SELECT * FROM hardware_kits WHERE is_active = 1 ORDER BY sort_order, name').all();
+  const role = req.dealer.role || 'dealer';
+
+  const mapped = kits.map(kit => {
+    // Get kit items with product details
+    const items = db.prepare(`
+      SELECT ki.quantity, p.id as product_id, p.name, p.sku, p.description, p.category, p.stock_qty
+      FROM hardware_kit_items ki
+      JOIN hardware_products p ON ki.product_id = p.id
+      WHERE ki.kit_id = ?
+    `).all(kit.id);
+
+    // Check if all items are in stock
+    const inStock = items.every(item => item.stock_qty >= item.quantity);
+
+    return {
+      ...kit,
+      your_price: role === 'distributor' ? kit.distributor_price : kit.dealer_price,
+      msrp: kit.base_price,
+      savings_pct: Math.round((1 - (role === 'distributor' ? kit.distributor_price : kit.dealer_price) / kit.base_price) * 100),
+      in_stock: inStock,
+      items
+    };
+  });
+
+  res.json({ kits: mapped });
+});
+
+// POST /api/hardware/kits/order - order a kit (deducts stock for all items, charges kit price)
+router.post('/kits/order', authenticateToken, (req, res) => {
+  const { kit_id, notes } = req.body;
+  if (!kit_id) return res.status(400).json({ error: 'Kit ID is required' });
+
+  const db = getDb();
+  const role = req.dealer.role || 'dealer';
+
+  const kit = db.prepare('SELECT * FROM hardware_kits WHERE id = ? AND is_active = 1').get(kit_id);
+  if (!kit) return res.status(404).json({ error: 'Kit not found' });
+
+  const kitPrice = role === 'distributor' ? kit.distributor_price : kit.dealer_price;
+
+  // Get kit items and verify stock
+  const items = db.prepare(`
+    SELECT ki.quantity, p.*
+    FROM hardware_kit_items ki
+    JOIN hardware_products p ON ki.product_id = p.id
+    WHERE ki.kit_id = ?
+  `).all(kit_id);
+
+  for (const item of items) {
+    if (item.stock_qty < item.quantity) {
+      return res.status(400).json({ error: `Insufficient stock for ${item.name}. Need ${item.quantity}, have ${item.stock_qty}` });
+    }
+  }
+
+  // Check balance
+  const dealer = db.prepare('SELECT account_balance FROM dealers WHERE id = ?').get(req.dealer.id);
+  if (dealer.account_balance < kitPrice) {
+    return res.status(400).json({ error: `Insufficient balance. Need $${kitPrice.toFixed(2)}, have $${dealer.account_balance.toFixed(2)}` });
+  }
+
+  // Create hardware order
+  const orderId = uuidv4();
+  const orderNumber = generateHardwareOrderNumber();
+
+  db.prepare(`
+    INSERT INTO hardware_orders (id, order_number, dealer_id, status, total_amount, notes)
+    VALUES (?, ?, ?, 'confirmed', ?, ?)
+  `).run(orderId, orderNumber, req.dealer.id, kitPrice, notes || `Kit: ${kit.name}`);
+
+  // Create line items + deduct stock
+  for (const item of items) {
+    const unitPrice = role === 'distributor' ? item.distributor_price : item.dealer_price;
+    db.prepare('INSERT INTO hardware_order_items (id, order_id, product_id, quantity, unit_price) VALUES (?, ?, ?, ?, ?)')
+      .run(uuidv4(), orderId, item.id, item.quantity, unitPrice);
+    db.prepare('UPDATE hardware_products SET stock_qty = stock_qty - ? WHERE id = ?')
+      .run(item.quantity, item.id);
+  }
+
+  // Deduct balance
+  db.prepare('UPDATE dealers SET account_balance = account_balance - ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(kitPrice, req.dealer.id);
+  db.prepare('INSERT INTO account_transactions (id, dealer_id, amount, type, description) VALUES (?, ?, ?, ?, ?)')
+    .run(uuidv4(), req.dealer.id, -kitPrice, 'charge', `Hardware kit: ${kit.name} (${orderNumber})`);
+
+  const order = db.prepare('SELECT * FROM hardware_orders WHERE id = ?').get(orderId);
+  res.status(201).json({ order });
+});
+
+// GET /api/hardware/orders - list hardware orders (MUST be before /:id)
+router.get('/orders', authenticateToken, (req, res) => {
+  const db = getDb();
+  let orders;
+  if (req.dealer.is_admin) {
+    orders = db.prepare(`
+      SELECT ho.*, d.company_name as dealer_name
+      FROM hardware_orders ho
+      JOIN dealers d ON ho.dealer_id = d.id
+      ORDER BY ho.created_at DESC
+    `).all();
+  } else {
+    orders = db.prepare('SELECT * FROM hardware_orders WHERE dealer_id = ? ORDER BY created_at DESC').all(req.dealer.id);
+  }
+  res.json({ orders });
+});
+
 // GET /api/hardware/:id
 router.get('/:id', authenticateToken, (req, res) => {
   const db = getDb();
@@ -125,23 +234,6 @@ router.post('/order', authenticateToken, (req, res) => {
 
   const order = db.prepare('SELECT * FROM hardware_orders WHERE id = ?').get(orderId);
   res.status(201).json({ order });
-});
-
-// GET /api/hardware/orders - list hardware orders
-router.get('/orders', authenticateToken, (req, res) => {
-  const db = getDb();
-  let orders;
-  if (req.dealer.is_admin) {
-    orders = db.prepare(`
-      SELECT ho.*, d.company_name as dealer_name
-      FROM hardware_orders ho
-      JOIN dealers d ON ho.dealer_id = d.id
-      ORDER BY ho.created_at DESC
-    `).all();
-  } else {
-    orders = db.prepare('SELECT * FROM hardware_orders WHERE dealer_id = ? ORDER BY created_at DESC').all(req.dealer.id);
-  }
-  res.json({ orders });
 });
 
 module.exports = router;

@@ -1374,10 +1374,14 @@ async function changePassword() {
 async function loadHardware() {
   const main = document.getElementById('mainContent');
   try {
-    const data = await api('GET', '/api/hardware');
-    const products = data.products;
+    const [prodData, kitData] = await Promise.all([
+      api('GET', '/api/hardware'),
+      api('GET', '/api/hardware/kits')
+    ]);
+    const products = prodData.products;
+    const kits = kitData.kits;
 
-    // Group by category
+    // Group products by category
     const categories = {};
     products.forEach(p => {
       if (!categories[p.category]) categories[p.category] = [];
@@ -1387,10 +1391,51 @@ async function loadHardware() {
     main.innerHTML = `
       <div class="page-header">
         <div>
-          <h1 class="page-title">Hardware Catalog</h1>
-          <p class="page-subtitle">${products.length} products available — your ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
+          <h1 class="page-title">Hardware & Tuning Tools</h1>
+          <p class="page-subtitle">Your ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
         </div>
       </div>
+
+      ${kits.length ? `
+      <div style="margin-bottom:28px;">
+        <h2 style="font-size:18px;font-weight:600;color:var(--text-primary);margin-bottom:16px;font-family:'Poppins',sans-serif;">Tuning Kits & Bundles</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px;">
+          ${kits.map(kit => `
+            <div class="card work-queue-card" style="border-top:3px solid var(--primary);position:relative;overflow:hidden;">
+              ${kit.badge ? `<div style="position:absolute;top:12px;right:-30px;background:var(--primary);color:#fff;font-size:10px;font-weight:700;padding:3px 36px;transform:rotate(45deg);text-transform:uppercase;letter-spacing:1px;">${kit.badge}</div>` : ''}
+              <div style="padding:20px;">
+                <div style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:6px;">${kit.name}</div>
+                <div style="font-size:12px;color:var(--text-muted);font-family:monospace;margin-bottom:10px;">SKU: ${kit.sku}</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.5;">${kit.description}</div>
+
+                <div style="background:var(--bg-primary);border-radius:8px;padding:12px;margin-bottom:16px;">
+                  <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Kit Includes:</div>
+                  ${kit.items.map(item => `
+                    <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;">
+                      <span style="color:var(--text-secondary);">${item.name}</span>
+                      <span style="color:var(--text-muted);font-weight:500;">x${item.quantity}</span>
+                    </div>
+                  `).join('')}
+                </div>
+
+                <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+                  <div>
+                    <div style="font-size:11px;color:var(--text-muted);text-decoration:line-through;">MSRP $${kit.msrp.toFixed(2)}</div>
+                    <div style="font-size:26px;font-weight:700;color:var(--primary);">$${kit.your_price.toFixed(2)}</div>
+                    <div style="font-size:12px;color:#81c784;font-weight:600;">Save ${kit.savings_pct}%</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div style="font-size:12px;color:${kit.in_stock ? '#81c784' : '#ef5350'};margin-bottom:8px;">${kit.in_stock ? 'In Stock' : 'Some items out of stock'}</div>
+                    ${!DEALER.is_admin && kit.in_stock ? `<button class="btn btn-primary" style="font-size:13px;" onclick="orderKit('${kit.id}','${kit.name}',${kit.your_price})">Buy Kit</button>` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      <h2 style="font-size:18px;font-weight:600;color:var(--text-primary);margin-bottom:16px;font-family:'Poppins',sans-serif;">Individual Products</h2>
 
       ${Object.entries(categories).map(([cat, items]) => `
         <div class="card" style="margin-bottom:20px">
@@ -1430,6 +1475,15 @@ async function loadHardware() {
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
   }
+}
+
+async function orderKit(kitId, kitName, kitPrice) {
+  if (!confirm(`Order the ${kitName} for $${kitPrice.toFixed(2)}? This will be charged to your account balance.`)) return;
+  try {
+    const data = await api('POST', '/api/hardware/kits/order', { kit_id: kitId });
+    toast(`${kitName} ordered! Order #${data.order.order_number}`, 'success');
+    loadHardware();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 let _cart = [];

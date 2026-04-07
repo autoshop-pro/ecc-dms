@@ -170,6 +170,32 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES hardware_products(id)
     );
 
+    -- Hardware kits (bundles of products at a package price)
+    CREATE TABLE IF NOT EXISTS hardware_kits (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      sku TEXT UNIQUE,
+      description TEXT,
+      badge TEXT,
+      base_price REAL NOT NULL DEFAULT 0,
+      dealer_price REAL NOT NULL DEFAULT 0,
+      distributor_price REAL NOT NULL DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Kit items (which products are included in a kit)
+    CREATE TABLE IF NOT EXISTS hardware_kit_items (
+      id TEXT PRIMARY KEY,
+      kit_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (kit_id) REFERENCES hardware_kits(id),
+      FOREIGN KEY (product_id) REFERENCES hardware_products(id)
+    );
+
     -- Tune pricing table (admin sets prices per tune type)
     CREATE TABLE IF NOT EXISTS tune_pricing (
       id TEXT PRIMARY KEY,
@@ -266,6 +292,98 @@ function initializeDatabase() {
     const stmt = db.prepare('INSERT INTO hardware_products (id, name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (const p of products) {
       stmt.run(uuidv4(), p.name, p.sku, p.desc, p.cat, p.base, p.dealer, p.dist, p.qty);
+    }
+  }
+
+  // Seed hardware kits if empty
+  const kitsExist = db.prepare('SELECT id FROM hardware_kits LIMIT 1').get();
+  if (!kitsExist) {
+    // Get product IDs by SKU for building kit contents
+    const getBySku = (sku) => db.prepare('SELECT id FROM hardware_products WHERE sku = ?').get(sku);
+
+    const kits = [
+      {
+        name: 'Dealer Starter Kit',
+        sku: 'KIT-DEALER-START',
+        desc: 'Everything a new dealer needs to start offering ECU tuning. Includes the FlexRead Pro tool, bench cable set, and a bundle of emulators to handle the most common jobs.',
+        badge: 'Most Popular',
+        base: 2274, dealer: 1599, dist: 1249, sort: 1,
+        items: [
+          { sku: 'ECC-FRP-01', qty: 1 },   // FlexRead Pro
+          { sku: 'ECC-BLC-01', qty: 1 },   // BenchLink Cable Set
+          { sku: 'ECC-GPF-01', qty: 2 },   // GPF Emulator x2
+          { sku: 'ECC-DPF-EM', qty: 2 },   // DPF Emulator x2
+          { sku: 'ECC-NOX-01', qty: 2 },   // NOx Emulator x2
+        ]
+      },
+      {
+        name: 'Diesel Specialist Kit',
+        sku: 'KIT-DIESEL-PRO',
+        desc: 'Full diesel tuning package. FlexRead Pro, bench cables, plus DPF, NOx, and EGR emulators in bulk for high-volume diesel delete work.',
+        badge: 'Diesel Shops',
+        base: 2425, dealer: 1749, dist: 1349, sort: 2,
+        items: [
+          { sku: 'ECC-FRP-01', qty: 1 },   // FlexRead Pro
+          { sku: 'ECC-BLC-01', qty: 1 },   // BenchLink Cable Set
+          { sku: 'ECC-DPF-EM', qty: 5 },   // DPF Emulator x5
+          { sku: 'ECC-NOX-01', qty: 5 },   // NOx Emulator x5
+        ]
+      },
+      {
+        name: 'Performance Pro Kit',
+        sku: 'KIT-PERF-PRO',
+        desc: 'For shops focused on performance tuning. FlexRead Pro, bench cables, TCU adapter, and GPF emulators for gas performance builds.',
+        badge: 'Performance',
+        base: 2445, dealer: 1799, dist: 1399, sort: 3,
+        items: [
+          { sku: 'ECC-FRP-01', qty: 1 },   // FlexRead Pro
+          { sku: 'ECC-BLC-01', qty: 1 },   // BenchLink Cable Set
+          { sku: 'ECC-TCU-01', qty: 1 },   // TCU Adapter
+          { sku: 'ECC-GPF-01', qty: 3 },   // GPF Emulator x3
+        ]
+      },
+      {
+        name: 'Emulator Refill Pack',
+        sku: 'KIT-EMU-REFILL',
+        desc: 'Restock your emulator inventory. Bulk pack of the three most common emulators at a significant discount.',
+        badge: 'Restock',
+        base: 1585, dealer: 1099, dist: 849, sort: 4,
+        items: [
+          { sku: 'ECC-GPF-01', qty: 5 },   // GPF Emulator x5
+          { sku: 'ECC-DPF-EM', qty: 5 },   // DPF Emulator x5
+          { sku: 'ECC-NOX-01', qty: 5 },   // NOx Emulator x5
+        ]
+      },
+      {
+        name: 'Full Shop Kit',
+        sku: 'KIT-FULL-SHOP',
+        desc: 'The complete ECC tuning setup. Every tool, adapter, and emulator you need to handle gas, diesel, and TCU work from day one. Best value.',
+        badge: 'Best Value',
+        base: 3549, dealer: 2499, dist: 1899, sort: 0,
+        items: [
+          { sku: 'ECC-FRP-01', qty: 1 },   // FlexRead Pro
+          { sku: 'ECC-BLC-01', qty: 1 },   // BenchLink Cable Set
+          { sku: 'ECC-TCU-01', qty: 1 },   // TCU Adapter
+          { sku: 'ECC-GPF-01', qty: 3 },   // GPF Emulator x3
+          { sku: 'ECC-DPF-EM', qty: 3 },   // DPF Emulator x3
+          { sku: 'ECC-NOX-01', qty: 3 },   // NOx Emulator x3
+        ]
+      }
+    ];
+
+    const kitStmt = db.prepare('INSERT INTO hardware_kits (id, name, sku, description, badge, base_price, dealer_price, distributor_price, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const kitItemStmt = db.prepare('INSERT INTO hardware_kit_items (id, kit_id, product_id, quantity) VALUES (?, ?, ?, ?)');
+
+    for (const kit of kits) {
+      const kitId = uuidv4();
+      kitStmt.run(kitId, kit.name, kit.sku, kit.desc, kit.badge, kit.base, kit.dealer, kit.dist, kit.sort);
+
+      for (const item of kit.items) {
+        const product = getBySku(item.sku);
+        if (product) {
+          kitItemStmt.run(uuidv4(), kitId, product.id, item.qty);
+        }
+      }
     }
   }
 

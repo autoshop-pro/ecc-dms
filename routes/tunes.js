@@ -190,20 +190,66 @@ router.put('/:id/status', authenticateToken, requireAdmin, (req, res) => {
   res.json({ order });
 });
 
-// POST /api/tunes/:id/tuned-file - upload completed tune file (admin)
+// POST /api/tunes/:id/tuned-file - upload completed tune file + set price (admin)
 router.post('/:id/tuned-file', authenticateToken, requireAdmin, upload.single('tuned_file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Tuned file is required' });
   }
 
   const db = getDb();
+  const price = parseFloat(req.body.price) || 0;
+
   db.prepare(`
-    UPDATE tune_orders SET tuned_file_path = ?, tuned_file_name = ?, status = 'completed', completed_at = datetime('now'), updated_at = datetime('now')
+    UPDATE tune_orders SET tuned_file_path = ?, tuned_file_name = ?, price = ?, status = 'completed', completed_at = datetime('now'), updated_at = datetime('now')
     WHERE id = ?
-  `).run(req.file.path, req.file.originalname, req.params.id);
+  `).run(req.file.path, req.file.originalname, price, req.params.id);
 
   const order = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(req.params.id);
   res.json({ order });
+});
+
+// PUT /api/tunes/:id/set-price - admin sets price on order
+router.put('/:id/set-price', authenticateToken, requireAdmin, (req, res) => {
+  const { price } = req.body;
+  if (price == null || price < 0) return res.status(400).json({ error: 'Valid price required' });
+
+  const db = getDb();
+  db.prepare('UPDATE tune_orders SET price = ?, updated_at = datetime(\'now\') WHERE id = ?').run(price, req.params.id);
+  const order = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(req.params.id);
+  res.json({ order });
+});
+
+// POST /api/tunes/:id/pay - dealer pays for tune to unlock download
+router.post('/:id/pay', authenticateToken, (req, res) => {
+  const db = getDb();
+  const order = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(req.params.id);
+
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!req.dealer.is_admin && order.dealer_id !== req.dealer.id) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  if (order.is_paid) return res.status(400).json({ error: 'Already paid' });
+  if (!order.tuned_file_path) return res.status(400).json({ error: 'Tuned file not yet available' });
+  if (order.price <= 0) return res.status(400).json({ error: 'No price set for this order' });
+
+  // Check balance
+  const dealer = db.prepare('SELECT account_balance FROM dealers WHERE id = ?').get(order.dealer_id);
+  if (dealer.account_balance < order.price) {
+    return res.status(400).json({
+      error: `Insufficient balance. Need $${order.price.toFixed(2)}, have $${dealer.account_balance.toFixed(2)}`
+    });
+  }
+
+  // Charge
+  db.prepare('UPDATE dealers SET account_balance = account_balance - ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(order.price, order.dealer_id);
+  db.prepare('UPDATE tune_orders SET is_paid = 1, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(order.id);
+  db.prepare('INSERT INTO account_transactions (id, dealer_id, amount, type, description, order_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(uuidv4(), order.dealer_id, -order.price, 'charge', `Tune order ${order.order_number}`, order.id);
+
+  const updated = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(order.id);
+  res.json({ order: updated });
 });
 
 // GET /api/tunes/:id/download/:type - download stock or tuned file
@@ -220,6 +266,10 @@ router.get('/:id/download/:type', authenticateToken, (req, res) => {
   if (fileType === 'stock' && order.stock_file_path) {
     return res.download(order.stock_file_path, order.stock_file_name);
   } else if (fileType === 'tuned' && order.tuned_file_path) {
+    // Gate tuned file download behind payment (admin always has access)
+    if (!req.dealer.is_admin && order.price > 0 && !order.is_paid) {
+      return res.status(402).json({ error: 'Payment required before downloading tuned file. Please pay from your order details page.' });
+    }
     return res.download(order.tuned_file_path, order.tuned_file_name);
   }
 

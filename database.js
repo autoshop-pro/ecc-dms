@@ -20,7 +20,7 @@ function initializeDatabase() {
   const db = getDb();
 
   db.exec(`
-    -- Dealers table
+    -- Dealers table (3-tier: admin/hq, distributor, dealer)
     CREATE TABLE IF NOT EXISTS dealers (
       id TEXT PRIMARY KEY,
       company_name TEXT NOT NULL,
@@ -33,11 +33,15 @@ function initializeDatabase() {
       province TEXT,
       postal_code TEXT,
       country TEXT DEFAULT 'Canada',
-      credit_balance REAL DEFAULT 0,
+      account_balance REAL DEFAULT 0,
       is_active INTEGER DEFAULT 1,
       is_admin INTEGER DEFAULT 0,
+      role TEXT DEFAULT 'dealer',
+      parent_dealer_id TEXT,
+      discount_pct REAL DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (parent_dealer_id) REFERENCES dealers(id)
     );
 
     -- Clients table (shared across dealers)
@@ -88,7 +92,8 @@ function initializeDatabase() {
       stock_file_name TEXT,
       tuned_file_path TEXT,
       tuned_file_name TEXT,
-      credit_cost REAL DEFAULT 0,
+      price REAL DEFAULT 0,
+      is_paid INTEGER DEFAULT 0,
       admin_notes TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
@@ -111,8 +116,8 @@ function initializeDatabase() {
       FOREIGN KEY (uploaded_by) REFERENCES dealers(id)
     );
 
-    -- Credit transactions
-    CREATE TABLE IF NOT EXISTS credit_transactions (
+    -- Account transactions (dollar-based)
+    CREATE TABLE IF NOT EXISTS account_transactions (
       id TEXT PRIMARY KEY,
       dealer_id TEXT NOT NULL,
       amount REAL NOT NULL,
@@ -123,30 +128,156 @@ function initializeDatabase() {
       FOREIGN KEY (dealer_id) REFERENCES dealers(id),
       FOREIGN KEY (order_id) REFERENCES tune_orders(id)
     );
+
+    -- Hardware catalog
+    CREATE TABLE IF NOT EXISTS hardware_products (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      sku TEXT UNIQUE,
+      description TEXT,
+      category TEXT,
+      base_price REAL NOT NULL DEFAULT 0,
+      dealer_price REAL NOT NULL DEFAULT 0,
+      distributor_price REAL NOT NULL DEFAULT 0,
+      stock_qty INTEGER DEFAULT 0,
+      image_url TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Hardware orders
+    CREATE TABLE IF NOT EXISTS hardware_orders (
+      id TEXT PRIMARY KEY,
+      order_number TEXT UNIQUE NOT NULL,
+      dealer_id TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      total_amount REAL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (dealer_id) REFERENCES dealers(id)
+    );
+
+    -- Hardware order items
+    CREATE TABLE IF NOT EXISTS hardware_order_items (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      unit_price REAL NOT NULL,
+      FOREIGN KEY (order_id) REFERENCES hardware_orders(id),
+      FOREIGN KEY (product_id) REFERENCES hardware_products(id)
+    );
+
+    -- Tune pricing table (admin sets prices per tune type)
+    CREATE TABLE IF NOT EXISTS tune_pricing (
+      id TEXT PRIMARY KEY,
+      tune_key TEXT UNIQUE NOT NULL,
+      label TEXT NOT NULL,
+      dealer_price REAL NOT NULL DEFAULT 0,
+      distributor_price REAL NOT NULL DEFAULT 0,
+      is_active INTEGER DEFAULT 1
+    );
   `);
 
-  // Seed admin account if none exists
+  // Migration: add new columns to existing tables if they don't exist
+  const cols = db.prepare("PRAGMA table_info(dealers)").all().map(c => c.name);
+  if (!cols.includes('role')) {
+    db.exec("ALTER TABLE dealers ADD COLUMN role TEXT DEFAULT 'dealer'");
+  }
+  if (!cols.includes('parent_dealer_id')) {
+    db.exec("ALTER TABLE dealers ADD COLUMN parent_dealer_id TEXT");
+  }
+  if (!cols.includes('discount_pct')) {
+    db.exec("ALTER TABLE dealers ADD COLUMN discount_pct REAL DEFAULT 0");
+  }
+  if (!cols.includes('account_balance')) {
+    // Rename credit_balance → account_balance for clarity
+    try { db.exec("ALTER TABLE dealers ADD COLUMN account_balance REAL DEFAULT 0"); } catch(e) {}
+    // Copy old credit_balance values if they exist
+    if (cols.includes('credit_balance')) {
+      try { db.exec("UPDATE dealers SET account_balance = credit_balance WHERE account_balance = 0 AND credit_balance > 0"); } catch(e) {}
+    }
+  }
+
+  const tuneCols = db.prepare("PRAGMA table_info(tune_orders)").all().map(c => c.name);
+  if (!tuneCols.includes('price')) {
+    db.exec("ALTER TABLE tune_orders ADD COLUMN price REAL DEFAULT 0");
+  }
+  if (!tuneCols.includes('is_paid')) {
+    db.exec("ALTER TABLE tune_orders ADD COLUMN is_paid INTEGER DEFAULT 0");
+  }
+
+  // Seed admin (HQ) account if none exists
   const adminExists = db.prepare('SELECT id FROM dealers WHERE is_admin = 1').get();
   if (!adminExists) {
     const hash = bcrypt.hashSync('admin123', 10);
     db.prepare(`
-      INSERT INTO dealers (id, company_name, contact_name, email, password_hash, phone, is_admin, credit_balance)
-      VALUES (?, ?, ?, ?, ?, ?, 1, 99999)
+      INSERT INTO dealers (id, company_name, contact_name, email, password_hash, phone, is_admin, role, account_balance)
+      VALUES (?, ?, ?, ?, ?, ?, 1, 'admin', 0)
     `).run(uuidv4(), 'ECC Tuned', 'Admin', 'admin@ecctuned.com', hash, '519-000-0000');
+  } else {
+    // Update existing admin role
+    db.prepare("UPDATE dealers SET role = 'admin' WHERE is_admin = 1 AND (role IS NULL OR role = 'dealer')").run();
   }
 
-  // Seed a demo dealer if none exists
-  const dealerExists = db.prepare('SELECT id FROM dealers WHERE is_admin = 0').get();
+  // Seed demo dealer if none exists
+  const dealerExists = db.prepare("SELECT id FROM dealers WHERE is_admin = 0 AND email = 'dejan@foreignautomotive.ca'").get();
   if (!dealerExists) {
     const hash = bcrypt.hashSync('dealer123', 10);
-    const dealerId = uuidv4();
     db.prepare(`
-      INSERT INTO dealers (id, company_name, contact_name, email, password_hash, phone, address, city, province, postal_code, credit_balance)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(dealerId, 'Foreign Automotive', 'Dejan Zunic', 'dejan@foreignautomotive.ca', hash, '519-555-0100', '123 Auto Lane', 'Kitchener', 'ON', 'N2G 1A1', 500);
+      INSERT INTO dealers (id, company_name, contact_name, email, password_hash, phone, address, city, province, postal_code, role, account_balance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dealer', ?)
+    `).run(uuidv4(), 'Foreign Automotive', 'Dejan Zunic', 'dejan@foreignautomotive.ca', hash, '519-555-0100', '123 Auto Lane', 'Kitchener', 'ON', 'N2G 1A1', 500.00);
+  }
+
+  // Seed default tune pricing if empty
+  const pricingExists = db.prepare('SELECT id FROM tune_pricing LIMIT 1').get();
+  if (!pricingExists) {
+    const pricing = [
+      { key: 'stage1', label: 'Stage 1', dealer: 350, dist: 250 },
+      { key: 'stage2', label: 'Stage 2', dealer: 500, dist: 375 },
+      { key: 'stage3', label: 'Custom Stage 3', dealer: 800, dist: 600 },
+      { key: 'eco_tune', label: 'Economy Tune', dealer: 300, dist: 225 },
+      { key: 'custom', label: 'Custom', dealer: 0, dist: 0 },
+      { key: 'dpf_delete', label: 'DPF Delete (add-on)', dealer: 150, dist: 100 },
+      { key: 'egr_delete', label: 'EGR Delete (add-on)', dealer: 100, dist: 75 },
+      { key: 'adblue_delete', label: 'AdBlue Delete (add-on)', dealer: 125, dist: 90 },
+      { key: 'tcu_tune', label: 'TCU Tune (add-on)', dealer: 250, dist: 175 },
+    ];
+    const stmt = db.prepare('INSERT INTO tune_pricing (id, tune_key, label, dealer_price, distributor_price) VALUES (?, ?, ?, ?, ?)');
+    for (const p of pricing) {
+      stmt.run(uuidv4(), p.key, p.label, p.dealer, p.dist);
+    }
+  }
+
+  // Seed sample hardware if empty
+  const hwExists = db.prepare('SELECT id FROM hardware_products LIMIT 1').get();
+  if (!hwExists) {
+    const products = [
+      { name: 'ECC FlexRead Pro', sku: 'ECC-FRP-01', desc: 'Universal OBD2 ECU read/write tool. Supports bench and OBD protocols.', cat: 'Tools', base: 899, dealer: 699, dist: 549, qty: 25 },
+      { name: 'ECC BenchLink Cable Set', sku: 'ECC-BLC-01', desc: 'Boot-mode bench cable kit for Bosch, Siemens, Delphi ECUs.', cat: 'Cables', base: 349, dealer: 249, dist: 199, qty: 40 },
+      { name: 'ECC TCU Adapter', sku: 'ECC-TCU-01', desc: 'TCU read/write adapter for ZF, DSG, and PDK transmissions.', cat: 'Adapters', base: 499, dealer: 379, dist: 299, qty: 15 },
+      { name: 'ECC GPF/OPF Emulator', sku: 'ECC-GPF-01', desc: 'Gasoline particulate filter emulator module.', cat: 'Emulators', base: 199, dealer: 149, dist: 119, qty: 60 },
+      { name: 'ECC DPF Pressure Sensor Emulator', sku: 'ECC-DPF-EM', desc: 'Differential pressure sensor emulator for diesel DPF deletes.', cat: 'Emulators', base: 149, dealer: 109, dist: 89, qty: 50 },
+      { name: 'ECC NOx Sensor Emulator', sku: 'ECC-NOX-01', desc: 'NOx sensor signal emulator for SCR/AdBlue delete applications.', cat: 'Emulators', base: 179, dealer: 129, dist: 99, qty: 35 },
+    ];
+    const stmt = db.prepare('INSERT INTO hardware_products (id, name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    for (const p of products) {
+      stmt.run(uuidv4(), p.name, p.sku, p.desc, p.cat, p.base, p.dealer, p.dist, p.qty);
+    }
   }
 
   console.log('Database initialized successfully');
+}
+
+function generateHardwareOrderNumber() {
+  const db = getDb();
+  const last = db.prepare('SELECT order_number FROM hardware_orders ORDER BY created_at DESC LIMIT 1').get();
+  if (!last) return 'HW-0001';
+  const lastNum = parseInt(last.order_number.split('-')[1]);
+  return `HW-${String(lastNum + 1).padStart(4, '0')}`;
 }
 
 function generateOrderNumber() {
@@ -157,4 +288,4 @@ function generateOrderNumber() {
   return `ECC-${String(lastNum + 1).padStart(4, '0')}`;
 }
 
-module.exports = { getDb, initializeDatabase, generateOrderNumber };
+module.exports = { getDb, initializeDatabase, generateOrderNumber, generateHardwareOrderNumber };

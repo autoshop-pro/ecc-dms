@@ -42,8 +42,11 @@ router.post('/login', (req, res) => {
       city: dealer.city,
       province: dealer.province,
       postal_code: dealer.postal_code,
-      credit_balance: dealer.credit_balance,
-      is_admin: dealer.is_admin
+      account_balance: dealer.account_balance || dealer.credit_balance || 0,
+      is_admin: dealer.is_admin,
+      role: dealer.role || 'dealer',
+      parent_dealer_id: dealer.parent_dealer_id,
+      discount_pct: dealer.discount_pct || 0
     }
   });
 });
@@ -52,7 +55,8 @@ router.post('/login', (req, res) => {
 router.get('/me', authenticateToken, (req, res) => {
   const db = getDb();
   const dealer = db.prepare(`
-    SELECT id, company_name, contact_name, email, phone, address, city, province, postal_code, country, credit_balance, is_admin, created_at
+    SELECT id, company_name, contact_name, email, phone, address, city, province, postal_code, country,
+           account_balance, is_admin, role, parent_dealer_id, discount_pct, created_at
     FROM dealers WHERE id = ?
   `).get(req.dealer.id);
 
@@ -71,7 +75,7 @@ router.put('/password', authenticateToken, (req, res) => {
   }
 
   const hash = bcrypt.hashSync(new_password, 10);
-  db.prepare('UPDATE dealers SET password_hash = ?, updated_at = datetime("now") WHERE id = ?').run(hash, req.dealer.id);
+  db.prepare('UPDATE dealers SET password_hash = ?, updated_at = datetime(\'now\') WHERE id = ?').run(hash, req.dealer.id);
 
   res.json({ message: 'Password updated successfully' });
 });

@@ -58,6 +58,10 @@ function render(page) {
     case 'clients': loadClients(); break;
     case 'client-detail': loadClientDetail(window._params.id); break;
     case 'vehicles': loadVehicles(); break;
+    case 'hardware': loadHardware(); break;
+    case 'account': loadAccount(); break;
+    case 'admin-dealers': loadAdminDealers(); break;
+    case 'manage-dealers': loadManageDealers(); break;
     case 'settings': loadSettings(); break;
     default: loadDashboard();
   }
@@ -134,6 +138,7 @@ function logout() {
 function renderLayout(page) {
   const initials = DEALER.contact_name.split(' ').map(w => w[0]).join('').toUpperCase();
   const isAdmin = DEALER.is_admin;
+  const isDistributor = DEALER.role === 'distributor';
 
   return `
     <div class="app-layout">
@@ -148,12 +153,23 @@ function renderLayout(page) {
             <div class="nav-item ${page === 'dashboard' ? 'active' : ''}" data-page="dashboard">
               <span class="nav-icon">📊</span> Dashboard
             </div>
+            ${!isAdmin ? `
             <div class="nav-item ${page === 'new-tune' ? 'active' : ''}" data-page="new-tune">
               <span class="nav-icon">⚡</span> New Tune Request
-            </div>
+            </div>` : ''}
             <div class="nav-item ${page === 'orders' ? 'active' : ''}" data-page="orders">
-              <span class="nav-icon">📋</span> My Orders
+              <span class="nav-icon">📋</span> ${isAdmin ? 'All Orders' : 'My Orders'}
             </div>
+          </div>
+          <div class="nav-section">
+            <div class="nav-section-title">Shop</div>
+            <div class="nav-item ${page === 'hardware' ? 'active' : ''}" data-page="hardware">
+              <span class="nav-icon">🔩</span> Hardware
+            </div>
+            ${!isAdmin ? `
+            <div class="nav-item ${page === 'account' ? 'active' : ''}" data-page="account">
+              <span class="nav-icon">💰</span> Account & Billing
+            </div>` : ''}
           </div>
           <div class="nav-section">
             <div class="nav-section-title">Management</div>
@@ -164,14 +180,18 @@ function renderLayout(page) {
               <span class="nav-icon">🚗</span> Vehicles
             </div>
           </div>
+          ${isDistributor ? `
+          <div class="nav-section">
+            <div class="nav-section-title">Distributor</div>
+            <div class="nav-item ${page === 'manage-dealers' ? 'active' : ''}" data-page="manage-dealers">
+              <span class="nav-icon">🏪</span> My Dealers
+            </div>
+          </div>` : ''}
           ${isAdmin ? `
           <div class="nav-section">
             <div class="nav-section-title">Admin</div>
             <div class="nav-item ${page === 'admin-dealers' ? 'active' : ''}" data-page="admin-dealers">
               <span class="nav-icon">🏢</span> Dealers
-            </div>
-            <div class="nav-item ${page === 'admin-orders' ? 'active' : ''}" data-page="admin-orders">
-              <span class="nav-icon">📦</span> All Orders
             </div>
           </div>` : ''}
           <div class="nav-section">
@@ -283,19 +303,23 @@ async function loadDashboard() {
                 ${o.notes ? `<div style="color:var(--text-muted);font-size:12px;font-style:italic;">📝 ${o.notes}</div>` : ''}
               </div>` : ''}
 
-              <div style="padding:8px 20px 16px;display:flex;gap:10px;align-items:center;border-top:1px solid var(--border);">
+              <div style="padding:8px 20px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);">
                 <select class="form-control" id="qStatus_${o.id}" style="width:auto;padding:6px 12px;font-size:12px;">
                   <option value="pending" ${o.status === 'pending' ? 'selected' : ''}>Pending</option>
                   <option value="in_progress" ${o.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
                   <option value="completed" ${o.status === 'completed' ? 'selected' : ''}>Completed</option>
                   <option value="on_hold" ${o.status === 'on_hold' ? 'selected' : ''}>On Hold</option>
                 </select>
+                <div style="display:flex;align-items:center;gap:4px;">
+                  <span style="color:var(--text-muted);font-size:12px;">$</span>
+                  <input type="number" step="0.01" min="0" class="form-control" id="qPrice_${o.id}" value="${o.price || 0}" style="width:80px;padding:6px 8px;font-size:12px;" placeholder="Price">
+                </div>
                 <button class="btn btn-primary btn-sm" style="font-size:12px;padding:6px 14px;" onclick="quickUpdateStatus('${o.id}')">Update</button>
                 <label class="btn btn-secondary btn-sm" style="font-size:12px;padding:6px 14px;cursor:pointer;margin:0;">
                   📤 Upload Tuned File
                   <input type="file" style="display:none" onchange="uploadTunedFile('${o.id}', this)">
                 </label>
-                <button class="btn btn-secondary btn-sm" style="font-size:12px;padding:6px 14px;" onclick="navigate('order-detail', {id:'${o.id}'})">View Full Details</button>
+                <button class="btn btn-secondary btn-sm" style="font-size:12px;padding:6px 14px;" onclick="navigate('order-detail', {id:'${o.id}'})">View Details</button>
               </div>
             </div>`;
           }).join('') : `
@@ -327,8 +351,8 @@ async function loadDashboard() {
             <p class="page-subtitle">Welcome back, ${DEALER.contact_name}</p>
           </div>
           <div class="credit-display">
-            <span style="color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Credits</span>
-            <span class="credit-amount">${data.credit_balance}</span>
+            <span style="color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Balance</span>
+            <span class="credit-amount">$${(data.account_balance || 0).toFixed(2)}</span>
           </div>
         </div>
 
@@ -404,8 +428,14 @@ async function loadDashboard() {
 async function quickUpdateStatus(orderId) {
   try {
     const status = document.getElementById(`qStatus_${orderId}`).value;
+    const priceEl = document.getElementById(`qPrice_${orderId}`);
+    const price = priceEl ? parseFloat(priceEl.value) || 0 : 0;
+
     await api('PUT', `/api/tunes/${orderId}/status`, { status });
-    toast('Status updated!', 'success');
+    if (price > 0) {
+      await api('PUT', `/api/tunes/${orderId}/set-price`, { price });
+    }
+    toast('Order updated!', 'success');
     loadDashboard();
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -949,9 +979,16 @@ async function loadOrderDetail(orderId) {
             ${o.admin_notes ? `<div class="detail-item"><div class="detail-label">ECC Notes</div><div class="detail-value">${o.admin_notes}</div></div>` : ''}
           </div>
 
-          <div style="margin-top:20px;display:flex;gap:12px;">
+          ${o.price > 0 ? `
+          <div class="detail-grid" style="margin-top:12px;">
+            <div class="detail-item"><div class="detail-label">Price</div><div class="detail-value" style="color:var(--primary);font-weight:600;font-size:18px;">$${o.price.toFixed(2)}</div></div>
+            <div class="detail-item"><div class="detail-label">Payment</div><div class="detail-value"><span class="badge badge-${o.is_paid ? 'completed' : 'pending'}">${o.is_paid ? 'Paid' : 'Unpaid'}</span></div></div>
+          </div>` : ''}
+
+          <div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;">
             ${o.stock_file_name ? `<a href="/api/tunes/${o.id}/download/stock" class="btn btn-secondary btn-sm">📥 Download Stock File (${o.stock_file_name})</a>` : ''}
-            ${o.tuned_file_name ? `<a href="/api/tunes/${o.id}/download/tuned" class="btn btn-primary btn-sm">📥 Download Tuned File (${o.tuned_file_name})</a>` : ''}
+            ${o.tuned_file_name && (DEALER.is_admin || o.is_paid || o.price <= 0) ? `<a href="/api/tunes/${o.id}/download/tuned" class="btn btn-primary btn-sm">📥 Download Tuned File (${o.tuned_file_name})</a>` : ''}
+            ${o.tuned_file_name && !DEALER.is_admin && o.price > 0 && !o.is_paid ? `<button class="btn btn-primary btn-sm" onclick="payForTune('${o.id}', ${o.price})">💳 Pay $${o.price.toFixed(2)} to Download</button>` : ''}
           </div>
         </div>
       </div>
@@ -970,6 +1007,10 @@ async function loadOrderDetail(orderId) {
                 <option value="on_hold" ${o.status === 'on_hold' ? 'selected' : ''}>On Hold</option>
                 <option value="cancelled" ${o.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>Price ($)</label>
+              <input type="number" step="0.01" min="0" class="form-control" id="adminPrice" value="${o.price || 0}" placeholder="0.00">
             </div>
             <div class="form-group">
               <label>Admin Notes</label>
@@ -999,8 +1040,23 @@ async function updateOrderStatus(orderId) {
   try {
     const status = document.getElementById('adminStatus').value;
     const admin_notes = document.getElementById('adminNotes').value;
+    const price = parseFloat(document.getElementById('adminPrice').value) || 0;
+
+    // Update status
     await api('PUT', `/api/tunes/${orderId}/status`, { status, admin_notes });
+    // Update price
+    await api('PUT', `/api/tunes/${orderId}/set-price`, { price });
+
     toast('Order updated!', 'success');
+    loadOrderDetail(orderId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function payForTune(orderId, price) {
+  if (!confirm(`Pay $${price.toFixed(2)} from your account balance to download the tuned file?`)) return;
+  try {
+    await api('POST', `/api/tunes/${orderId}/pay`);
+    toast('Payment successful! You can now download the tuned file.', 'success');
     loadOrderDetail(orderId);
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -1009,10 +1065,21 @@ async function uploadTunedFile(orderId, input) {
   if (!input.files[0]) return;
   const formData = new FormData();
   formData.append('tuned_file', input.files[0]);
+
+  // Try to get price from admin price input (order detail page) or prompt
+  const priceEl = document.getElementById('adminPrice');
+  const price = priceEl ? parseFloat(priceEl.value) || 0 : 0;
+  formData.append('price', price);
+
   try {
     await api('POST', `/api/tunes/${orderId}/tuned-file`, formData, true);
     toast('Tuned file uploaded!', 'success');
-    loadOrderDetail(orderId);
+    // Reload whichever view we're on
+    if (document.getElementById('workQueueContainer')) {
+      loadDashboard();
+    } else {
+      loadOrderDetail(orderId);
+    }
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1261,7 +1328,7 @@ async function loadSettings() {
             <div class="detail-item"><div class="detail-label">Email</div><div class="detail-value">${d.email}</div></div>
             <div class="detail-item"><div class="detail-label">Phone</div><div class="detail-value">${d.phone || '—'}</div></div>
             <div class="detail-item"><div class="detail-label">Address</div><div class="detail-value">${[d.address, d.city, d.province, d.postal_code].filter(Boolean).join(', ') || '—'}</div></div>
-            <div class="detail-item"><div class="detail-label">Credits</div><div class="detail-value credit-amount">${d.credit_balance}</div></div>
+            <div class="detail-item"><div class="detail-label">Account Balance</div><div class="detail-value credit-amount">$${(d.account_balance || 0).toFixed(2)}</div></div>
             <div class="detail-item"><div class="detail-label">Member Since</div><div class="detail-value">${formatDate(d.created_at)}</div></div>
           </div>
         </div>
@@ -1300,6 +1367,432 @@ async function changePassword() {
     toast('Password updated!', 'success');
     document.getElementById('currentPassword').value = '';
     document.getElementById('newPassword').value = '';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- HARDWARE CATALOG ----
+async function loadHardware() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/hardware');
+    const products = data.products;
+
+    // Group by category
+    const categories = {};
+    products.forEach(p => {
+      if (!categories[p.category]) categories[p.category] = [];
+      categories[p.category].push(p);
+    });
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Hardware Catalog</h1>
+          <p class="page-subtitle">${products.length} products available — your ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
+        </div>
+      </div>
+
+      ${Object.entries(categories).map(([cat, items]) => `
+        <div class="card" style="margin-bottom:20px">
+          <div class="card-header"><h3>${cat}</h3></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding:16px 20px;">
+            ${items.map(p => `
+              <div style="border:1px solid var(--border);border-radius:8px;padding:16px;background:var(--bg-primary);">
+                <div style="font-weight:600;color:var(--text-primary);margin-bottom:6px;">${p.name}</div>
+                <div style="font-size:12px;color:var(--text-muted);font-family:monospace;margin-bottom:8px;">SKU: ${p.sku || '—'}</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">${p.description || ''}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:11px;color:var(--text-muted);text-decoration:line-through;">MSRP $${p.msrp.toFixed(2)}</div>
+                    <div style="font-size:20px;font-weight:700;color:var(--primary);">$${p.your_price.toFixed(2)}</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div style="font-size:12px;color:${p.stock_qty > 0 ? '#81c784' : '#ef5350'};">${p.stock_qty > 0 ? p.stock_qty + ' in stock' : 'Out of stock'}</div>
+                    ${!DEALER.is_admin && p.stock_qty > 0 ? `<button class="btn btn-primary btn-sm" style="margin-top:6px;font-size:11px;" onclick="addToCart('${p.id}','${p.name}',${p.your_price})">Add to Cart</button>` : ''}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+
+      ${!DEALER.is_admin ? `
+      <div class="card" id="cartCard" style="display:none;">
+        <div class="card-header"><h3>Shopping Cart</h3></div>
+        <div id="cartItems" style="padding:16px 20px;"></div>
+        <div style="padding:0 20px 16px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-size:18px;font-weight:600;color:var(--primary);" id="cartTotal">$0.00</div>
+          <button class="btn btn-primary" onclick="submitHardwareOrder()">Place Order</button>
+        </div>
+      </div>` : ''}
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+let _cart = [];
+function addToCart(productId, name, price) {
+  const existing = _cart.find(i => i.product_id === productId);
+  if (existing) {
+    existing.quantity++;
+  } else {
+    _cart.push({ product_id: productId, name, price, quantity: 1 });
+  }
+  renderCart();
+  toast(name + ' added to cart', 'success');
+}
+
+function removeFromCart(idx) {
+  _cart.splice(idx, 1);
+  renderCart();
+}
+
+function renderCart() {
+  const card = document.getElementById('cartCard');
+  const container = document.getElementById('cartItems');
+  if (!card || !container) return;
+
+  if (_cart.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+
+  card.style.display = 'block';
+  let total = 0;
+  container.innerHTML = _cart.map((item, i) => {
+    const lineTotal = item.price * item.quantity;
+    total += lineTotal;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <span style="font-weight:500;">${item.name}</span>
+          <span style="color:var(--text-muted);font-size:13px;"> x${item.quantity}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="font-weight:600;">$${lineTotal.toFixed(2)}</span>
+          <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;" onclick="removeFromCart(${i})">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+  document.getElementById('cartTotal').textContent = '$' + total.toFixed(2);
+}
+
+async function submitHardwareOrder() {
+  if (!_cart.length) return toast('Cart is empty', 'error');
+  if (!confirm('Place this hardware order? The total will be deducted from your account balance.')) return;
+
+  try {
+    const items = _cart.map(i => ({ product_id: i.product_id, quantity: i.quantity }));
+    await api('POST', '/api/hardware/order', { items });
+    toast('Hardware order placed successfully!', 'success');
+    _cart = [];
+    loadHardware();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- ACCOUNT & BILLING ----
+async function loadAccount() {
+  const main = document.getElementById('mainContent');
+  try {
+    const [me, txData] = await Promise.all([
+      api('GET', '/api/auth/me'),
+      api('GET', '/api/dealers/transactions')
+    ]);
+    const d = me.dealer;
+    const txs = txData.transactions;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Account & Billing</h1>
+          <p class="page-subtitle">${d.company_name}</p>
+        </div>
+        <div class="credit-display" style="text-align:right;">
+          <span style="color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Account Balance</span>
+          <span class="credit-amount" style="font-size:28px;">$${(d.account_balance || 0).toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header"><h3>Add Funds</h3></div>
+        <div class="card-body">
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Add funds to your account balance. Contact ECC for wire transfer or other payment methods.</p>
+          <div style="display:flex;gap:12px;align-items:center;">
+            <div style="display:flex;gap:8px;">
+              ${[100, 250, 500, 1000].map(amt => `
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('depositAmount').value=${amt}">$${amt}</button>
+              `).join('')}
+            </div>
+            <input type="number" step="0.01" min="1" class="form-control" id="depositAmount" placeholder="Amount" style="width:140px;">
+            <button class="btn btn-primary" onclick="depositFunds()">Add Funds</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>Transaction History</h3></div>
+        <div class="table-wrapper">
+          ${txs.length ? `
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Type</th><th>Description</th><th>Order</th><th>Amount</th></tr>
+            </thead>
+            <tbody>
+              ${txs.map(t => `
+                <tr>
+                  <td>${formatDate(t.created_at)}</td>
+                  <td><span class="badge badge-${t.type === 'deposit' ? 'completed' : 'pending'}">${t.type}</span></td>
+                  <td>${t.description || '—'}</td>
+                  <td>${t.order_number || '—'}</td>
+                  <td style="font-weight:600;color:${t.amount >= 0 ? '#81c784' : '#ef5350'};">${t.amount >= 0 ? '+' : ''}$${t.amount.toFixed(2)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : `
+          <div class="empty-state">
+            <div class="empty-icon">💰</div>
+            <h3>No transactions yet</h3>
+            <p>Add funds to get started</p>
+          </div>`}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+async function depositFunds() {
+  const amount = parseFloat(document.getElementById('depositAmount').value);
+  if (!amount || amount <= 0) return toast('Enter a valid amount', 'error');
+  if (!confirm(`Add $${amount.toFixed(2)} to your account?`)) return;
+
+  try {
+    const data = await api('POST', '/api/pricing/deposit', { amount });
+    toast(data.message, 'success');
+    loadAccount();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- ADMIN DEALER MANAGEMENT ----
+async function loadAdminDealers() {
+  const main = document.getElementById('mainContent');
+  try {
+    const [dealerData, distData] = await Promise.all([
+      api('GET', '/api/dealers'),
+      api('GET', '/api/dealers/distributors')
+    ]);
+    const dealers = dealerData.dealers;
+    const distributors = distData.distributors;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Dealer Management</h1>
+          <p class="page-subtitle">${dealers.length} accounts</p>
+        </div>
+        <button class="btn btn-primary" onclick="showCreateDealerForm()">+ Add Dealer</button>
+      </div>
+
+      <div id="createDealerArea" style="display:none;">
+        <div class="card" style="margin-bottom:20px;">
+          <div class="card-header"><h3>Create New Dealer</h3></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <div class="form-group"><label>Company Name *</label><input class="form-control" id="ndCompany"></div>
+              <div class="form-group"><label>Contact Name *</label><input class="form-control" id="ndContact"></div>
+              <div class="form-group"><label>Email *</label><input type="email" class="form-control" id="ndEmail"></div>
+              <div class="form-group"><label>Password *</label><input type="password" class="form-control" id="ndPassword"></div>
+              <div class="form-group"><label>Phone</label><input class="form-control" id="ndPhone"></div>
+              <div class="form-group"><label>City</label><input class="form-control" id="ndCity"></div>
+              <div class="form-group"><label>Province</label><input class="form-control" id="ndProvince"></div>
+              <div class="form-group">
+                <label>Role</label>
+                <select class="form-control" id="ndRole">
+                  <option value="dealer">Standard Dealer</option>
+                  <option value="distributor">Distributor</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Parent Distributor</label>
+                <select class="form-control" id="ndParent">
+                  <option value="">— None (Direct) —</option>
+                  ${distributors.map(d => `<option value="${d.id}">${d.company_name}</option>`).join('')}
+                </select>
+              </div>
+              <div class="form-group"><label>Opening Balance ($)</label><input type="number" step="0.01" class="form-control" id="ndBalance" value="0"></div>
+              <div class="form-group"><label>Discount %</label><input type="number" step="1" min="0" max="100" class="form-control" id="ndDiscount" value="0"></div>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:12px;">
+              <button class="btn btn-primary" onclick="createDealer()">Create Dealer</button>
+              <button class="btn btn-secondary" onclick="document.getElementById('createDealerArea').style.display='none'">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr><th>Company</th><th>Contact</th><th>Role</th><th>Parent</th><th>Balance</th><th>Discount</th><th>Orders</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${dealers.filter(d => !d.is_admin).map(d => `
+                <tr>
+                  <td class="td-primary">${d.company_name}</td>
+                  <td>${d.contact_name}<br><span style="font-size:11px;color:var(--text-muted);">${d.email}</span></td>
+                  <td><span class="badge badge-${d.role === 'distributor' ? 'in_progress' : 'completed'}">${d.role || 'dealer'}</span></td>
+                  <td>${d.parent_name || '—'}</td>
+                  <td style="font-weight:600;">$${(d.account_balance || 0).toFixed(2)}</td>
+                  <td>${d.discount_pct || 0}%</td>
+                  <td>${d.order_count || 0}</td>
+                  <td><span class="badge badge-${d.is_active ? 'completed' : 'cancelled'}">${d.is_active ? 'Active' : 'Inactive'}</span></td>
+                  <td>
+                    <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="adjustBalance('${d.id}','${d.company_name}')">+ Funds</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+function showCreateDealerForm() {
+  document.getElementById('createDealerArea').style.display = 'block';
+}
+
+async function createDealer() {
+  try {
+    await api('POST', '/api/dealers', {
+      company_name: document.getElementById('ndCompany').value,
+      contact_name: document.getElementById('ndContact').value,
+      email: document.getElementById('ndEmail').value,
+      password: document.getElementById('ndPassword').value,
+      phone: document.getElementById('ndPhone').value,
+      city: document.getElementById('ndCity').value,
+      province: document.getElementById('ndProvince').value,
+      role: document.getElementById('ndRole').value,
+      parent_dealer_id: document.getElementById('ndParent').value || null,
+      account_balance: parseFloat(document.getElementById('ndBalance').value) || 0,
+      discount_pct: parseFloat(document.getElementById('ndDiscount').value) || 0
+    });
+    toast('Dealer created!', 'success');
+    loadAdminDealers();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function adjustBalance(dealerId, companyName) {
+  const amount = prompt(`Add funds to ${companyName}.\nEnter dollar amount (negative to deduct):`);
+  if (!amount) return;
+  const val = parseFloat(amount);
+  if (isNaN(val)) return toast('Invalid amount', 'error');
+
+  try {
+    await api('PUT', `/api/dealers/${dealerId}/balance`, { amount: val, description: 'Admin adjustment' });
+    toast(`$${val.toFixed(2)} ${val > 0 ? 'added to' : 'deducted from'} ${companyName}`, 'success');
+    loadAdminDealers();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- DISTRIBUTOR DEALER MANAGEMENT ----
+async function loadManageDealers() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/dealers');
+    const dealers = data.dealers;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">My Dealers</h1>
+          <p class="page-subtitle">${dealers.length} dealers under your distribution</p>
+        </div>
+        <button class="btn btn-primary" onclick="showDistCreateForm()">+ Add Dealer</button>
+      </div>
+
+      <div id="distCreateArea" style="display:none;">
+        <div class="card" style="margin-bottom:20px;">
+          <div class="card-header"><h3>Add New Dealer</h3></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <div class="form-group"><label>Company Name *</label><input class="form-control" id="ddCompany"></div>
+              <div class="form-group"><label>Contact Name *</label><input class="form-control" id="ddContact"></div>
+              <div class="form-group"><label>Email *</label><input type="email" class="form-control" id="ddEmail"></div>
+              <div class="form-group"><label>Password *</label><input type="password" class="form-control" id="ddPassword"></div>
+              <div class="form-group"><label>Phone</label><input class="form-control" id="ddPhone"></div>
+              <div class="form-group"><label>City</label><input class="form-control" id="ddCity"></div>
+              <div class="form-group"><label>Discount %</label><input type="number" step="1" min="0" max="100" class="form-control" id="ddDiscount" value="0"></div>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:12px;">
+              <button class="btn btn-primary" onclick="distCreateDealer()">Create Dealer</button>
+              <button class="btn btn-secondary" onclick="document.getElementById('distCreateArea').style.display='none'">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrapper">
+          ${dealers.length ? `
+          <table>
+            <thead>
+              <tr><th>Company</th><th>Contact</th><th>Email</th><th>Balance</th><th>Discount</th><th>Orders</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${dealers.map(d => `
+                <tr>
+                  <td class="td-primary">${d.company_name}</td>
+                  <td>${d.contact_name}</td>
+                  <td>${d.email}</td>
+                  <td style="font-weight:600;">$${(d.account_balance || 0).toFixed(2)}</td>
+                  <td>${d.discount_pct || 0}%</td>
+                  <td>${d.order_count || 0}</td>
+                  <td><span class="badge badge-${d.is_active ? 'completed' : 'cancelled'}">${d.is_active ? 'Active' : 'Inactive'}</span></td>
+                  <td>
+                    <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="adjustBalance('${d.id}','${d.company_name}')">+ Funds</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : `
+          <div class="empty-state">
+            <div class="empty-icon">🏪</div>
+            <h3>No dealers yet</h3>
+            <p>Create your first dealer account</p>
+          </div>`}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+function showDistCreateForm() {
+  document.getElementById('distCreateArea').style.display = 'block';
+}
+
+async function distCreateDealer() {
+  try {
+    await api('POST', '/api/dealers', {
+      company_name: document.getElementById('ddCompany').value,
+      contact_name: document.getElementById('ddContact').value,
+      email: document.getElementById('ddEmail').value,
+      password: document.getElementById('ddPassword').value,
+      phone: document.getElementById('ddPhone').value,
+      city: document.getElementById('ddCity').value,
+      discount_pct: parseFloat(document.getElementById('ddDiscount').value) || 0
+    });
+    toast('Dealer created!', 'success');
+    loadManageDealers();
   } catch (err) { toast(err.message, 'error'); }
 }
 

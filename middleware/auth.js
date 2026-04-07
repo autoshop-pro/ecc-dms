@@ -22,7 +22,7 @@ function authenticateToken(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const db = getDb();
-    const dealer = db.prepare('SELECT id, company_name, contact_name, email, is_admin, is_active FROM dealers WHERE id = ?').get(decoded.id);
+    const dealer = db.prepare('SELECT id, company_name, contact_name, email, is_admin, is_active, role, parent_dealer_id, discount_pct FROM dealers WHERE id = ?').get(decoded.id);
 
     if (!dealer || !dealer.is_active) {
       return res.status(401).json({ error: 'Invalid or inactive account' });

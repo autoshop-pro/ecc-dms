@@ -212,83 +212,217 @@ async function loadDashboard() {
     const data = await api('GET', '/api/dealers/stats');
     const s = data.stats;
 
-    main.innerHTML = `
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Dashboard</h1>
-          <p class="page-subtitle">Welcome back, ${DEALER.contact_name}</p>
+    if (DEALER.is_admin) {
+      // ---- ADMIN WORK QUEUE VIEW ----
+      main.innerHTML = `
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">ECC HQ — Work Queue</h1>
+            <p class="page-subtitle">${data.workQueue.length} tune${data.workQueue.length !== 1 ? 's' : ''} awaiting action</p>
+          </div>
+          <div style="display:flex;gap:16px;align-items:center;">
+            <div class="stat-card stat-warning" style="margin:0;padding:12px 20px;min-width:auto;">
+              <div class="stat-label" style="font-size:11px;">Pending</div>
+              <div class="stat-value" style="font-size:22px;">${s.pendingOrders}</div>
+            </div>
+            <div class="stat-card stat-info" style="margin:0;padding:12px 20px;min-width:auto;">
+              <div class="stat-label" style="font-size:11px;">In Progress</div>
+              <div class="stat-value" style="font-size:22px;">${s.inProgressOrders}</div>
+            </div>
+            <div class="stat-card stat-success" style="margin:0;padding:12px 20px;min-width:auto;">
+              <div class="stat-label" style="font-size:11px;">Completed</div>
+              <div class="stat-value" style="font-size:22px;">${s.completedOrders}</div>
+            </div>
+          </div>
         </div>
-        <div class="credit-display">
-          <span style="color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Credits</span>
-          <span class="credit-amount">${data.credit_balance}</span>
-        </div>
-      </div>
 
-      <div class="stats-grid">
-        <div class="stat-card stat-primary">
-          <div class="stat-icon">📋</div>
-          <div class="stat-label">Total Orders</div>
-          <div class="stat-value">${s.totalOrders}</div>
-        </div>
-        <div class="stat-card stat-warning">
-          <div class="stat-icon">⏳</div>
-          <div class="stat-label">Pending</div>
-          <div class="stat-value">${s.pendingOrders}</div>
-        </div>
-        <div class="stat-card stat-info">
-          <div class="stat-icon">🔧</div>
-          <div class="stat-label">In Progress</div>
-          <div class="stat-value">${s.inProgressOrders}</div>
-        </div>
-        <div class="stat-card stat-success">
-          <div class="stat-icon">✅</div>
-          <div class="stat-label">Completed</div>
-          <div class="stat-value">${s.completedOrders}</div>
-        </div>
-      </div>
+        <div id="workQueueContainer">
+          ${data.workQueue.length ? data.workQueue.map(o => {
+            let opts = [];
+            try { opts = JSON.parse(o.options || '[]'); } catch(e) {}
+            const allOptions = TUNE_OPTIONS ? Object.values(TUNE_OPTIONS).flat() : [];
+            const optionLabels = opts.map(id => {
+              const found = allOptions.find(opt => opt.id === id);
+              return found ? found.label : id;
+            });
+            const timeAgo = getTimeAgo(o.created_at);
 
-      <div class="card">
-        <div class="card-header">
-          <h3>Recent Orders</h3>
-          <button class="btn btn-primary btn-sm" onclick="navigate('new-tune')">+ New Tune</button>
-        </div>
-        <div class="table-wrapper">
-          ${data.recentOrders.length ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Order #</th>
-                <th>Client</th>
-                <th>Vehicle</th>
-                <th>Tune Type</th>
-                <th>Status</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.recentOrders.map(o => `
-                <tr class="clickable" onclick="navigate('orders')">
-                  <td class="td-primary">${o.order_number}</td>
-                  <td>${o.first_name} ${o.last_name}</td>
-                  <td>${o.year || ''} ${o.make || ''} ${o.model || ''}</td>
-                  <td>${formatTuneType(o.tune_type)}</td>
-                  <td><span class="badge badge-${o.status}">${o.status.replace('_', ' ')}</span></td>
-                  <td>${formatDate(o.created_at)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>` : `
-          <div class="empty-state">
-            <div class="empty-icon">📋</div>
-            <h3>No orders yet</h3>
-            <p>Submit your first tune request to get started</p>
+            return `
+            <div class="card work-queue-card" style="margin-bottom:16px;border-left:4px solid ${o.status === 'in_progress' ? '#64b5f6' : '#ffb74d'};">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:16px 20px 12px;">
+                <div style="flex:1;">
+                  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                    <span style="font-weight:600;color:var(--accent);font-size:15px;">${o.order_number}</span>
+                    <span class="badge badge-${o.status}">${o.status.replace('_', ' ')}</span>
+                    <span style="color:var(--text-muted);font-size:12px;">${timeAgo}</span>
+                  </div>
+                  <div style="font-size:16px;font-weight:500;color:var(--text-primary);margin-bottom:4px;">
+                    ${o.year || ''} ${o.make || ''} ${o.model || ''} ${o.engine ? '— ' + o.engine : ''}
+                  </div>
+                  <div style="display:flex;gap:24px;color:var(--text-muted);font-size:13px;margin-bottom:6px;">
+                    <span>VIN: <span style="color:var(--text-secondary);font-family:monospace;">${o.vin || '—'}</span></span>
+                    <span>ECU: <span style="color:var(--text-secondary);">${o.ecu_type || '—'}</span></span>
+                    ${o.engine_code ? `<span>Code: <span style="color:var(--text-secondary);">${o.engine_code}</span></span>` : ''}
+                  </div>
+                  <div style="display:flex;gap:24px;color:var(--text-muted);font-size:13px;">
+                    <span>Dealer: <span style="color:var(--text-secondary);">${o.dealer_name}</span></span>
+                    <span>Client: <span style="color:var(--text-secondary);">${o.first_name} ${o.last_name}</span></span>
+                  </div>
+                </div>
+                <div style="text-align:right;min-width:140px;">
+                  <div style="font-size:13px;color:var(--accent);font-weight:600;margin-bottom:4px;">${formatTuneType(o.tune_type)}</div>
+                  ${o.stock_file_name ? `<a href="/api/tunes/${o.id}/download/stock" class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;margin-bottom:6px;display:inline-block;">📥 Stock File</a>` : ''}
+                </div>
+              </div>
+
+              ${optionLabels.length || o.notes ? `
+              <div style="padding:0 20px 12px;display:flex;gap:16px;flex-wrap:wrap;">
+                ${optionLabels.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;">${optionLabels.map(label =>
+                  `<span style="background:rgba(221,51,51,0.12);color:#dd3333;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:500;">${label}</span>`
+                ).join('')}</div>` : ''}
+                ${o.notes ? `<div style="color:var(--text-muted);font-size:12px;font-style:italic;">📝 ${o.notes}</div>` : ''}
+              </div>` : ''}
+
+              <div style="padding:8px 20px 16px;display:flex;gap:10px;align-items:center;border-top:1px solid var(--border);">
+                <select class="form-control" id="qStatus_${o.id}" style="width:auto;padding:6px 12px;font-size:12px;">
+                  <option value="pending" ${o.status === 'pending' ? 'selected' : ''}>Pending</option>
+                  <option value="in_progress" ${o.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
+                  <option value="completed" ${o.status === 'completed' ? 'selected' : ''}>Completed</option>
+                  <option value="on_hold" ${o.status === 'on_hold' ? 'selected' : ''}>On Hold</option>
+                </select>
+                <button class="btn btn-primary btn-sm" style="font-size:12px;padding:6px 14px;" onclick="quickUpdateStatus('${o.id}')">Update</button>
+                <label class="btn btn-secondary btn-sm" style="font-size:12px;padding:6px 14px;cursor:pointer;margin:0;">
+                  📤 Upload Tuned File
+                  <input type="file" style="display:none" onchange="uploadTunedFile('${o.id}', this)">
+                </label>
+                <button class="btn btn-secondary btn-sm" style="font-size:12px;padding:6px 14px;" onclick="navigate('order-detail', {id:'${o.id}'})">View Full Details</button>
+              </div>
+            </div>`;
+          }).join('') : `
+          <div class="card">
+            <div class="empty-state">
+              <div class="empty-icon">✅</div>
+              <h3>All caught up!</h3>
+              <p>No pending tune requests at this time</p>
+            </div>
           </div>`}
         </div>
-      </div>
-    `;
+      `;
+
+      // Load tune options if not cached (needed for option labels)
+      if (!TUNE_OPTIONS) {
+        try {
+          const optData = await api('GET', '/api/tunes/options');
+          TUNE_OPTIONS = optData.options;
+          loadDashboard(); // Re-render with option labels
+        } catch(e) {}
+      }
+
+    } else {
+      // ---- DEALER DASHBOARD VIEW ----
+      main.innerHTML = `
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Dashboard</h1>
+            <p class="page-subtitle">Welcome back, ${DEALER.contact_name}</p>
+          </div>
+          <div class="credit-display">
+            <span style="color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Credits</span>
+            <span class="credit-amount">${data.credit_balance}</span>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card stat-primary">
+            <div class="stat-icon">📋</div>
+            <div class="stat-label">Total Orders</div>
+            <div class="stat-value">${s.totalOrders}</div>
+          </div>
+          <div class="stat-card stat-warning">
+            <div class="stat-icon">⏳</div>
+            <div class="stat-label">Pending</div>
+            <div class="stat-value">${s.pendingOrders}</div>
+          </div>
+          <div class="stat-card stat-info">
+            <div class="stat-icon">🔧</div>
+            <div class="stat-label">In Progress</div>
+            <div class="stat-value">${s.inProgressOrders}</div>
+          </div>
+          <div class="stat-card stat-success">
+            <div class="stat-icon">✅</div>
+            <div class="stat-label">Completed</div>
+            <div class="stat-value">${s.completedOrders}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Recent Orders</h3>
+            <button class="btn btn-primary btn-sm" onclick="navigate('new-tune')">+ New Tune</button>
+          </div>
+          <div class="table-wrapper">
+            ${data.recentOrders.length ? `
+            <table>
+              <thead>
+                <tr>
+                  <th>Order #</th>
+                  <th>Client</th>
+                  <th>Vehicle</th>
+                  <th>Tune Type</th>
+                  <th>Status</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.recentOrders.map(o => `
+                  <tr class="clickable" onclick="navigate('order-detail', {id:'${o.id}'})">
+                    <td class="td-primary">${o.order_number}</td>
+                    <td>${o.first_name} ${o.last_name}</td>
+                    <td>${o.year || ''} ${o.make || ''} ${o.model || ''}</td>
+                    <td>${formatTuneType(o.tune_type)}</td>
+                    <td><span class="badge badge-${o.status}">${o.status.replace('_', ' ')}</span></td>
+                    <td>${formatDate(o.created_at)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>` : `
+            <div class="empty-state">
+              <div class="empty-icon">📋</div>
+              <h3>No orders yet</h3>
+              <p>Submit your first tune request to get started</p>
+            </div>`}
+          </div>
+        </div>
+      `;
+    }
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>Error loading dashboard</h3><p>${err.message}</p></div>`;
   }
+}
+
+// Quick status update from work queue
+async function quickUpdateStatus(orderId) {
+  try {
+    const status = document.getElementById(`qStatus_${orderId}`).value;
+    await api('PUT', `/api/tunes/${orderId}/status`, { status });
+    toast('Status updated!', 'success');
+    loadDashboard();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Time ago helper for work queue
+function getTimeAgo(dateStr) {
+  if (!dateStr) return '';
+  const now = new Date();
+  const then = new Date(dateStr + 'Z');
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return '1 day ago';
+  return days + ' days ago';
 }
 
 // ---- NEW TUNE REQUEST ----

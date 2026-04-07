@@ -85,19 +85,43 @@ router.get('/stats', authenticateToken, (req, res) => {
   const completedOrders = db.prepare(`SELECT COUNT(*) as count FROM tune_orders ${whereClause ? whereClause + ' AND' : 'WHERE'} status = 'completed'`).get(...params).count;
 
   const recentOrders = db.prepare(`
-    SELECT t.order_number, t.status, t.created_at, t.tune_type, v.year, v.make, v.model, c.first_name, c.last_name
+    SELECT t.order_number, t.id, t.status, t.created_at, t.tune_type, t.options, t.notes, t.stock_file_name,
+           v.year, v.make, v.model, v.vin, v.ecu_type, v.engine,
+           c.first_name, c.last_name,
+           d.company_name as dealer_name, d.contact_name as dealer_contact
     FROM tune_orders t
     JOIN vehicles v ON t.vehicle_id = v.id
     JOIN clients c ON t.client_id = c.id
+    JOIN dealers d ON t.dealer_id = d.id
     ${whereClause}
     ORDER BY t.created_at DESC LIMIT 10
   `).all(...params);
+
+  // For admin: get the full work queue (pending + in_progress)
+  let workQueue = [];
+  if (req.dealer.is_admin) {
+    workQueue = db.prepare(`
+      SELECT t.id, t.order_number, t.status, t.created_at, t.tune_type, t.options, t.notes, t.stock_file_name,
+             v.year, v.make, v.model, v.vin, v.ecu_type, v.engine, v.engine_code,
+             c.first_name, c.last_name, c.email as client_email,
+             d.company_name as dealer_name, d.contact_name as dealer_contact
+      FROM tune_orders t
+      JOIN vehicles v ON t.vehicle_id = v.id
+      JOIN clients c ON t.client_id = c.id
+      JOIN dealers d ON t.dealer_id = d.id
+      WHERE t.status IN ('pending', 'in_progress')
+      ORDER BY
+        CASE t.status WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 END,
+        t.created_at ASC
+    `).all();
+  }
 
   const dealer = db.prepare('SELECT credit_balance FROM dealers WHERE id = ?').get(req.dealer.id);
 
   res.json({
     stats: { totalOrders, pendingOrders, inProgressOrders, completedOrders },
     recentOrders,
+    workQueue,
     credit_balance: dealer.credit_balance
   });
 });

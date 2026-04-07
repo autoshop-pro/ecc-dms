@@ -511,6 +511,17 @@ tbody tr:last-child td { border-bottom: none; }
 .badge-cancelled { background: rgba(244,67,54,0.15); color: #ef5350; }
 
 /* ========================================
+   WORK QUEUE (Admin Dashboard)
+   ======================================== */
+.work-queue-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.work-queue-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+/* ========================================
    FORMS
    ======================================== */
 .form-grid {

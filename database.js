@@ -44,7 +44,7 @@ function initializeDatabase() {
       FOREIGN KEY (parent_dealer_id) REFERENCES dealers(id)
     );
 
-    -- Clients table (shared across dealers)
+    -- Clients table (dealer-owned with transfer support)
     CREATE TABLE IF NOT EXISTS clients (
       id TEXT PRIMARY KEY,
       first_name TEXT NOT NULL,
@@ -53,9 +53,23 @@ function initializeDatabase() {
       phone TEXT,
       notes TEXT,
       created_by_dealer_id TEXT,
+      current_dealer_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (created_by_dealer_id) REFERENCES dealers(id)
+      FOREIGN KEY (created_by_dealer_id) REFERENCES dealers(id),
+      FOREIGN KEY (current_dealer_id) REFERENCES dealers(id)
+    );
+
+    -- Client transfer log
+    CREATE TABLE IF NOT EXISTS client_transfers (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      from_dealer_id TEXT NOT NULL,
+      to_dealer_id TEXT NOT NULL,
+      transferred_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES clients(id),
+      FOREIGN KEY (from_dealer_id) REFERENCES dealers(id),
+      FOREIGN KEY (to_dealer_id) REFERENCES dealers(id)
     );
 
     -- Vehicles table (linked to clients)
@@ -240,6 +254,13 @@ function initializeDatabase() {
     if (cols.includes('credit_balance')) {
       try { db.exec("UPDATE dealers SET account_balance = credit_balance WHERE account_balance = 0 AND credit_balance > 0"); } catch(e) {}
     }
+  }
+
+  // Migration: add current_dealer_id to clients if missing
+  const clientCols = db.prepare("PRAGMA table_info(clients)").all().map(c => c.name);
+  if (!clientCols.includes('current_dealer_id')) {
+    db.exec("ALTER TABLE clients ADD COLUMN current_dealer_id TEXT");
+    db.exec("UPDATE clients SET current_dealer_id = created_by_dealer_id WHERE current_dealer_id IS NULL");
   }
 
   const hwCols = db.prepare("PRAGMA table_info(hardware_products)").all().map(c => c.name);

@@ -1115,20 +1115,32 @@ async function uploadTunedFile(orderId, input) {
 // ---- CLIENTS ----
 async function loadClients() {
   const main = document.getElementById('mainContent');
+  const isAdmin = DEALER && DEALER.role === 'admin';
+  const isDistributor = DEALER && DEALER.role === 'distributor';
+
   try {
     const data = await api('GET', '/api/clients');
+
+    const subtitle = isAdmin
+      ? 'All clients across all dealers'
+      : isDistributor
+        ? 'Your clients and sub-dealer clients'
+        : 'Your client database';
 
     main.innerHTML = `
       <div class="page-header">
         <div>
           <h1 class="page-title">Clients</h1>
-          <p class="page-subtitle">Shared client database across all dealers</p>
+          <p class="page-subtitle">${subtitle}</p>
         </div>
-        <button class="btn btn-primary" onclick="showAddClientPage()">+ Add Client</button>
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-secondary" onclick="showTransferClientModal()">🔄 Transfer Client</button>
+          <button class="btn btn-primary" onclick="showAddClientPage()">+ Add Client</button>
+        </div>
       </div>
 
       <div class="search-bar">
-        <input type="text" class="form-control" id="clientSearch" placeholder="Search by name, email, or phone...">
+        <input type="text" class="form-control" id="clientSearch" placeholder="Search your clients by name, email, or phone...">
         <button class="btn btn-secondary btn-sm" onclick="searchClients()">Search</button>
       </div>
 
@@ -1143,7 +1155,8 @@ async function loadClients() {
                 <th>Phone</th>
                 <th>Vehicles</th>
                 <th>Orders</th>
-                <th>Added By</th>
+                ${isAdmin ? '<th>Current Dealer</th>' : ''}
+                ${isDistributor ? '<th>Dealer</th>' : ''}
               </tr>
             </thead>
             <tbody id="clientsTable">
@@ -1153,8 +1166,33 @@ async function loadClients() {
           <div class="empty-state">
             <div class="empty-icon">👤</div>
             <h3>No clients yet</h3>
-            <p>Create a client when submitting a tune request</p>
+            <p>Add a client or transfer one from another dealer</p>
           </div>`}
+        </div>
+      </div>
+
+      <!-- Transfer Client Modal -->
+      <div id="transferModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+        <div style="background:var(--bg-card);border-radius:12px;padding:30px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;">
+          <h2 style="margin-bottom:5px;">Transfer Client</h2>
+          <p class="text-muted" style="margin-bottom:20px;font-size:13px;">Enter the client's exact full name and phone number to search. This is required to protect client privacy.</p>
+          <div class="form-group">
+            <label class="form-label">First Name *</label>
+            <input type="text" class="form-control" id="transferFirstName" placeholder="Exact first name">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name *</label>
+            <input type="text" class="form-control" id="transferLastName" placeholder="Exact last name">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Phone Number *</label>
+            <input type="text" class="form-control" id="transferPhone" placeholder="Exact phone number">
+          </div>
+          <div id="transferResults" style="margin-top:15px;"></div>
+          <div style="display:flex;gap:10px;margin-top:20px;">
+            <button class="btn btn-primary" onclick="searchTransferClient()">Search</button>
+            <button class="btn btn-secondary" onclick="closeTransferModal()">Cancel</button>
+          </div>
         </div>
       </div>
     `;
@@ -1168,6 +1206,9 @@ async function loadClients() {
 }
 
 function renderClientRows(clients) {
+  const isAdmin = DEALER && DEALER.role === 'admin';
+  const isDistributor = DEALER && DEALER.role === 'distributor';
+
   return clients.map(c => `
     <tr class="clickable" onclick="navigate('client-detail', {id:'${c.id}'})">
       <td class="td-primary">${c.first_name} ${c.last_name}</td>
@@ -1175,7 +1216,8 @@ function renderClientRows(clients) {
       <td>${c.phone || '—'}</td>
       <td>${c.vehicle_count || 0}</td>
       <td>${c.order_count || 0}</td>
-      <td>${c.created_by_company || '—'}</td>
+      ${isAdmin ? `<td>${c.current_dealer_company || '—'}</td>` : ''}
+      ${isDistributor ? `<td>${c.current_dealer_company || '—'}</td>` : ''}
     </tr>
   `).join('');
 }
@@ -1189,22 +1231,92 @@ async function searchClients() {
 }
 
 function showAddClientPage() {
-  // Redirect to new tune which has client creation
   navigate('new-tune');
+}
+
+function showTransferClientModal() {
+  const modal = document.getElementById('transferModal');
+  modal.style.display = 'flex';
+  document.getElementById('transferFirstName').value = '';
+  document.getElementById('transferLastName').value = '';
+  document.getElementById('transferPhone').value = '';
+  document.getElementById('transferResults').innerHTML = '';
+}
+
+function closeTransferModal() {
+  document.getElementById('transferModal').style.display = 'none';
+}
+
+async function searchTransferClient() {
+  const first_name = document.getElementById('transferFirstName').value.trim();
+  const last_name = document.getElementById('transferLastName').value.trim();
+  const phone = document.getElementById('transferPhone').value.trim();
+
+  if (!first_name || !last_name || !phone) {
+    toast('All three fields (first name, last name, phone) are required', 'error');
+    return;
+  }
+
+  try {
+    const data = await api('POST', '/api/clients/search-transfer', { first_name, last_name, phone });
+    const resultsDiv = document.getElementById('transferResults');
+
+    if (!data.clients || data.clients.length === 0) {
+      resultsDiv.innerHTML = `
+        <div style="padding:15px;background:var(--bg-hover);border-radius:8px;text-align:center;">
+          <p class="text-muted">No matching client found. Verify the exact full name and phone number.</p>
+        </div>
+      `;
+      return;
+    }
+
+    resultsDiv.innerHTML = data.clients.map(c => `
+      <div style="padding:15px;background:var(--bg-hover);border-radius:8px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <strong>${c.first_name} ${c.last_name}</strong><br>
+            <span class="text-muted" style="font-size:13px;">
+              Phone: ${c.phone || '—'} | Email: ${c.email || '—'}<br>
+              Current dealer: ${c.current_dealer_company || 'Unknown'}<br>
+              Vehicles: ${c.vehicle_count || 0} | Orders: ${c.order_count || 0}
+            </span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="confirmTransfer('${c.id}', '${c.first_name} ${c.last_name}')">Transfer to Me</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function confirmTransfer(clientId, clientName) {
+  if (!confirm(`Transfer ${clientName} to your client database? You will be able to see their full history.`)) return;
+
+  try {
+    const data = await api('POST', `/api/clients/${clientId}/transfer`);
+    toast(data.message || 'Client transferred successfully', 'success');
+    closeTransferModal();
+    loadClients();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 // ---- CLIENT DETAIL ----
 async function loadClientDetail(clientId) {
   const main = document.getElementById('mainContent');
+  const isAdmin = DEALER && DEALER.role === 'admin';
   try {
     const data = await api('GET', `/api/clients/${clientId}`);
     const c = data.client;
+    const transfers = data.transfers || [];
 
     main.innerHTML = `
       <div class="page-header">
         <div>
           <h1 class="page-title">${c.first_name} ${c.last_name}</h1>
-          <p class="page-subtitle">Client Profile — Added by ${c.created_by_company || 'Unknown'}</p>
+          <p class="page-subtitle">Client Profile — Current dealer: ${c.current_dealer_company || 'Unknown'} | Originally added by ${c.created_by_company || 'Unknown'}</p>
         </div>
       </div>
 
@@ -1256,6 +1368,25 @@ async function loadClientDetail(clientId) {
           </table>` : '<div class="empty-state"><p>No tune orders for this client</p></div>'}
         </div>
       </div>
+
+      ${transfers.length ? `
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>Transfer History</h3></div>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th>Date</th><th>From</th><th>To</th></tr></thead>
+            <tbody>
+              ${transfers.map(t => `
+                <tr>
+                  <td>${formatDate(t.transferred_at)}</td>
+                  <td>${t.from_dealer_name}</td>
+                  <td>${t.to_dealer_name}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
 
       <div style="margin-top:20px">
         <button class="btn btn-secondary" onclick="navigate('clients')">← Back to Clients</button>
@@ -1510,6 +1641,7 @@ async function loadTools() {
 // ---- ECC PERFORMANCE HARDWARE PAGE (emulators, sensors, modules) ----
 async function loadPerfHardware() {
   const main = document.getElementById('mainContent');
+  const isAdmin = DEALER && DEALER.role === 'admin';
   try {
     const prodData = await api('GET', '/api/hardware?type=hardware');
     const products = prodData.products;
@@ -1538,29 +1670,55 @@ async function loadPerfHardware() {
         ${Object.entries(categories).map(([cat, items]) => `
           <div class="card" style="margin-bottom:20px">
             <div class="card-header"><h3>${cat}</h3></div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding:16px 20px;">
-              ${items.map(p => `
-                <div style="border:1px solid var(--border);border-radius:8px;padding:16px;background:var(--bg-primary);">
-                  <div style="font-weight:600;color:var(--text-primary);margin-bottom:6px;">${p.name}</div>
-                  <div style="font-size:12px;color:var(--text-muted);font-family:monospace;margin-bottom:8px;">SKU: ${p.sku || '—'}</div>
-                  <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">${p.description || ''}</div>
-                  <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <div>
-                      <div style="font-size:11px;color:var(--text-muted);text-decoration:line-through;">MSRP $${p.msrp.toFixed(2)}</div>
-                      <div style="font-size:20px;font-weight:700;color:var(--primary);">$${p.your_price.toFixed(2)}</div>
-                    </div>
-                    <div style="text-align:right;">
-                      <div style="font-size:12px;color:${p.stock_qty > 0 ? '#81c784' : '#ef5350'};">${p.stock_qty > 0 ? p.stock_qty + ' in stock' : 'Out of stock'}</div>
-                      ${!DEALER.is_admin && p.stock_qty > 0 ? `<button class="btn btn-primary btn-sm" style="margin-top:6px;font-size:11px;" onclick="addToCart('${p.id}','${p.name}',${p.your_price})">Add to Cart</button>` : ''}
-                    </div>
-                  </div>
-                </div>
-              `).join('')}
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>SKU</th>
+                    <th>Description</th>
+                    <th style="text-align:right;">MSRP</th>
+                    <th style="text-align:right;">Your Price</th>
+                    <th style="text-align:center;">Stock</th>
+                    <th style="text-align:center;">Qty</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${items.map(p => `
+                    <tr>
+                      <td class="td-primary" style="white-space:nowrap;">${p.name}</td>
+                      <td style="font-family:monospace;font-size:12px;color:var(--text-muted);">${p.sku || '—'}</td>
+                      <td style="font-size:13px;color:var(--text-secondary);max-width:250px;">${p.description || ''}</td>
+                      <td style="text-align:right;text-decoration:line-through;color:var(--text-muted);font-size:13px;">$${p.msrp.toFixed(2)}</td>
+                      <td style="text-align:right;font-weight:700;color:var(--primary);font-size:16px;">$${p.your_price.toFixed(2)}</td>
+                      <td style="text-align:center;">
+                        ${p.stock_qty > 10
+                          ? `<span style="color:#81c784;font-weight:600;">${p.stock_qty} in stock</span>`
+                          : p.stock_qty > 0
+                            ? `<span style="color:#ffb74d;font-weight:600;">${p.stock_qty} left</span>`
+                            : `<span style="color:#ef5350;font-weight:600;">Out of stock</span><br><span style="font-size:11px;color:var(--text-muted);">ETA: Contact HQ</span>`
+                        }
+                      </td>
+                      <td style="text-align:center;width:70px;">
+                        ${!isAdmin && p.stock_qty > 0 ? `<input type="number" id="qty-${p.id}" min="1" max="${p.stock_qty}" value="1" class="form-control" style="width:60px;text-align:center;padding:4px;">` : '—'}
+                      </td>
+                      <td>
+                        ${!isAdmin && p.stock_qty > 0
+                          ? `<button class="btn btn-primary btn-sm" onclick="addToCartQty('${p.id}','${p.name}',${p.your_price})">Add to Cart</button>`
+                          : !isAdmin && p.stock_qty <= 0
+                            ? `<button class="btn btn-secondary btn-sm" disabled>Unavailable</button>`
+                            : ''}
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
             </div>
           </div>
         `).join('')}
 
-        ${!DEALER.is_admin ? `
+        ${!isAdmin ? `
         <div class="card" id="cartCard" style="display:none;">
           <div class="card-header"><h3>Shopping Cart</h3></div>
           <div id="cartItems" style="padding:16px 20px;"></div>
@@ -1576,6 +1734,19 @@ async function loadPerfHardware() {
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
   }
+}
+
+function addToCartQty(productId, name, price) {
+  const qtyInput = document.getElementById('qty-' + productId);
+  const qty = qtyInput ? parseInt(qtyInput.value) || 1 : 1;
+  const existing = _cart.find(i => i.product_id === productId);
+  if (existing) {
+    existing.quantity += qty;
+  } else {
+    _cart.push({ product_id: productId, name, price, quantity: qty });
+  }
+  renderCart();
+  toast(name + (qty > 1 ? ` x${qty}` : '') + ' added to cart', 'success');
 }
 
 async function orderKit(kitId, kitName, kitPrice) {

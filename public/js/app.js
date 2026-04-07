@@ -58,7 +58,8 @@ function render(page) {
     case 'clients': loadClients(); break;
     case 'client-detail': loadClientDetail(window._params.id); break;
     case 'vehicles': loadVehicles(); break;
-    case 'hardware': loadHardware(); break;
+    case 'tools': loadTools(); break;
+    case 'perf-hardware': loadPerfHardware(); break;
     case 'account': loadAccount(); break;
     case 'admin-dealers': loadAdminDealers(); break;
     case 'manage-dealers': loadManageDealers(); break;
@@ -163,8 +164,11 @@ function renderLayout(page) {
           </div>
           <div class="nav-section">
             <div class="nav-section-title">Shop</div>
-            <div class="nav-item ${page === 'hardware' ? 'active' : ''}" data-page="hardware">
-              <span class="nav-icon">🔩</span> Hardware
+            <div class="nav-item ${page === 'tools' ? 'active' : ''}" data-page="tools">
+              <span class="nav-icon">🔧</span> Tools
+            </div>
+            <div class="nav-item ${page === 'perf-hardware' ? 'active' : ''}" data-page="perf-hardware">
+              <span class="nav-icon">⚡</span> ECC Performance Hardware
             </div>
             ${!isAdmin ? `
             <div class="nav-item ${page === 'account' ? 'active' : ''}" data-page="account">
@@ -1371,11 +1375,12 @@ async function changePassword() {
 }
 
 // ---- HARDWARE CATALOG ----
-async function loadHardware() {
+// ---- TOOLS PAGE (tuning tools, cables, adapters + kits) ----
+async function loadTools() {
   const main = document.getElementById('mainContent');
   try {
     const [prodData, kitData] = await Promise.all([
-      api('GET', '/api/hardware'),
+      api('GET', '/api/hardware?type=tools'),
       api('GET', '/api/hardware/kits')
     ]);
     const products = prodData.products;
@@ -1391,8 +1396,8 @@ async function loadHardware() {
     main.innerHTML = `
       <div class="page-header">
         <div>
-          <h1 class="page-title">Hardware & Tuning Tools</h1>
-          <p class="page-subtitle">Your ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
+          <h1 class="page-title">Tools</h1>
+          <p class="page-subtitle">Tuning tools, cables, adapters & kits — ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
         </div>
       </div>
 
@@ -1477,12 +1482,83 @@ async function loadHardware() {
   }
 }
 
+// ---- ECC PERFORMANCE HARDWARE PAGE (emulators, sensors, modules) ----
+async function loadPerfHardware() {
+  const main = document.getElementById('mainContent');
+  try {
+    const prodData = await api('GET', '/api/hardware?type=hardware');
+    const products = prodData.products;
+
+    // Group products by category
+    const categories = {};
+    products.forEach(p => {
+      if (!categories[p.category]) categories[p.category] = [];
+      categories[p.category].push(p);
+    });
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">ECC Performance Hardware</h1>
+          <p class="page-subtitle">Emulators, sensors & performance modules — ${DEALER.role === 'distributor' ? 'distributor' : 'dealer'} pricing shown</p>
+        </div>
+      </div>
+
+      ${products.length === 0 ? `
+        <div class="empty-state">
+          <h3>No Products Available</h3>
+          <p>Performance hardware products will appear here once added.</p>
+        </div>
+      ` : `
+        ${Object.entries(categories).map(([cat, items]) => `
+          <div class="card" style="margin-bottom:20px">
+            <div class="card-header"><h3>${cat}</h3></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding:16px 20px;">
+              ${items.map(p => `
+                <div style="border:1px solid var(--border);border-radius:8px;padding:16px;background:var(--bg-primary);">
+                  <div style="font-weight:600;color:var(--text-primary);margin-bottom:6px;">${p.name}</div>
+                  <div style="font-size:12px;color:var(--text-muted);font-family:monospace;margin-bottom:8px;">SKU: ${p.sku || '—'}</div>
+                  <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">${p.description || ''}</div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                      <div style="font-size:11px;color:var(--text-muted);text-decoration:line-through;">MSRP $${p.msrp.toFixed(2)}</div>
+                      <div style="font-size:20px;font-weight:700;color:var(--primary);">$${p.your_price.toFixed(2)}</div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="font-size:12px;color:${p.stock_qty > 0 ? '#81c784' : '#ef5350'};">${p.stock_qty > 0 ? p.stock_qty + ' in stock' : 'Out of stock'}</div>
+                      ${!DEALER.is_admin && p.stock_qty > 0 ? `<button class="btn btn-primary btn-sm" style="margin-top:6px;font-size:11px;" onclick="addToCart('${p.id}','${p.name}',${p.your_price})">Add to Cart</button>` : ''}
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+
+        ${!DEALER.is_admin ? `
+        <div class="card" id="cartCard" style="display:none;">
+          <div class="card-header"><h3>Shopping Cart</h3></div>
+          <div id="cartItems" style="padding:16px 20px;"></div>
+          <div style="padding:0 20px 16px;display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:18px;font-weight:600;color:var(--primary);" id="cartTotal">$0.00</div>
+            <button class="btn btn-primary" onclick="submitHardwareOrder()">Place Order</button>
+          </div>
+        </div>` : ''}
+      `}
+    `;
+    // Re-render cart if items exist
+    if (_cart.length) renderCart();
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
 async function orderKit(kitId, kitName, kitPrice) {
   if (!confirm(`Order the ${kitName} for $${kitPrice.toFixed(2)}? This will be charged to your account balance.`)) return;
   try {
     const data = await api('POST', '/api/hardware/kits/order', { kit_id: kitId });
     toast(`${kitName} ordered! Order #${data.order.order_number}`, 'success');
-    loadHardware();
+    loadTools();
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1542,7 +1618,7 @@ async function submitHardwareOrder() {
     await api('POST', '/api/hardware/order', { items });
     toast('Hardware order placed successfully!', 'success');
     _cart = [];
-    loadHardware();
+    navigate(location.hash.replace('#','') || 'tools');
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1640,6 +1716,7 @@ async function loadAdminDealers() {
     ]);
     const dealers = dealerData.dealers;
     const distributors = distData.distributors;
+    _adminDealerList = dealers;
 
     main.innerHTML = `
       <div class="page-header">
@@ -1704,7 +1781,8 @@ async function loadAdminDealers() {
                   <td>${d.discount_pct || 0}%</td>
                   <td>${d.order_count || 0}</td>
                   <td><span class="badge badge-${d.is_active ? 'completed' : 'cancelled'}">${d.is_active ? 'Active' : 'Inactive'}</span></td>
-                  <td>
+                  <td style="white-space:nowrap;">
+                    <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="editDealer('${d.id}')">Edit</button>
                     <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="adjustBalance('${d.id}','${d.company_name}')">+ Funds</button>
                   </td>
                 </tr>
@@ -1713,14 +1791,107 @@ async function loadAdminDealers() {
           </table>
         </div>
       </div>
+
+      <!-- Edit Dealer Modal -->
+      <div id="editDealerModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;display:none;align-items:center;justify-content:center;">
+        <div class="card" style="width:600px;max-width:90vw;max-height:90vh;overflow-y:auto;margin:auto;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+            <h3 id="editModalTitle">Edit Dealer</h3>
+            <button class="btn btn-secondary btn-sm" onclick="closeEditModal()" style="font-size:14px;padding:2px 10px;">✕</button>
+          </div>
+          <div class="card-body">
+            <input type="hidden" id="edId">
+            <div class="form-grid">
+              <div class="form-group"><label>Company Name</label><input class="form-control" id="edCompany"></div>
+              <div class="form-group"><label>Contact Name</label><input class="form-control" id="edContact"></div>
+              <div class="form-group"><label>Phone</label><input class="form-control" id="edPhone"></div>
+              <div class="form-group"><label>City</label><input class="form-control" id="edCity"></div>
+              <div class="form-group"><label>Province</label><input class="form-control" id="edProvince"></div>
+              <div class="form-group">
+                <label>Role</label>
+                <select class="form-control" id="edRole">
+                  <option value="dealer">Standard Dealer</option>
+                  <option value="distributor">Distributor</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Parent Distributor</label>
+                <select class="form-control" id="edParent">
+                  <option value="">— None (Direct) —</option>
+                  ${distributors.map(d => `<option value="${d.id}">${d.company_name}</option>`).join('')}
+                </select>
+              </div>
+              <div class="form-group"><label>Discount %</label><input type="number" step="1" min="0" max="100" class="form-control" id="edDiscount"></div>
+              <div class="form-group">
+                <label>Status</label>
+                <select class="form-control" id="edActive">
+                  <option value="1">Active</option>
+                  <option value="0">Inactive</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:16px;">
+              <button class="btn btn-primary" onclick="saveDealer()">Save Changes</button>
+              <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
     `;
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
   }
 }
 
+// Store dealer list for edit lookups
+let _adminDealerList = [];
+
 function showCreateDealerForm() {
   document.getElementById('createDealerArea').style.display = 'block';
+}
+
+function editDealer(dealerId) {
+  const d = _adminDealerList.find(x => x.id === dealerId);
+  if (!d) return toast('Dealer not found', 'error');
+
+  document.getElementById('edId').value = d.id;
+  document.getElementById('edCompany').value = d.company_name || '';
+  document.getElementById('edContact').value = d.contact_name || '';
+  document.getElementById('edPhone').value = d.phone || '';
+  document.getElementById('edCity').value = d.city || '';
+  document.getElementById('edProvince').value = d.province || '';
+  document.getElementById('edRole').value = d.role || 'dealer';
+  document.getElementById('edParent').value = d.parent_dealer_id || '';
+  document.getElementById('edDiscount').value = d.discount_pct || 0;
+  document.getElementById('edActive').value = d.is_active ? '1' : '0';
+  document.getElementById('editModalTitle').textContent = `Edit: ${d.company_name}`;
+
+  document.getElementById('editDealerModal').style.display = 'block';
+}
+
+function closeEditModal() {
+  document.getElementById('editDealerModal').style.display = 'none';
+}
+
+async function saveDealer() {
+  const id = document.getElementById('edId').value;
+  try {
+    await api('PUT', `/api/dealers/${id}`, {
+      company_name: document.getElementById('edCompany').value,
+      contact_name: document.getElementById('edContact').value,
+      phone: document.getElementById('edPhone').value,
+      city: document.getElementById('edCity').value,
+      province: document.getElementById('edProvince').value,
+      role: document.getElementById('edRole').value,
+      parent_dealer_id: document.getElementById('edParent').value || null,
+      discount_pct: parseFloat(document.getElementById('edDiscount').value) || 0,
+      is_active: document.getElementById('edActive').value === '1',
+      account_balance: _adminDealerList.find(x => x.id === id)?.account_balance || 0
+    });
+    toast('Dealer updated!', 'success');
+    closeEditModal();
+    loadAdminDealers();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function createDealer() {

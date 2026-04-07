@@ -6,9 +6,16 @@ const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 
 // GET /api/hardware - list products (pricing based on dealer role)
+// Query params: ?type=tools|hardware  (optional filter by product_type)
 router.get('/', authenticateToken, (req, res) => {
   const db = getDb();
-  const products = db.prepare('SELECT * FROM hardware_products WHERE is_active = 1 ORDER BY category, name').all();
+  const typeFilter = req.query.type;
+  let products;
+  if (typeFilter && ['tools', 'hardware'].includes(typeFilter)) {
+    products = db.prepare('SELECT * FROM hardware_products WHERE is_active = 1 AND product_type = ? ORDER BY category, name').all(typeFilter);
+  } else {
+    products = db.prepare('SELECT * FROM hardware_products WHERE is_active = 1 ORDER BY category, name').all();
+  }
 
   // Return role-appropriate pricing
   const role = req.dealer.role || 'dealer';

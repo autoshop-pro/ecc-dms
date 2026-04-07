@@ -136,6 +136,7 @@ function initializeDatabase() {
       sku TEXT UNIQUE,
       description TEXT,
       category TEXT,
+      product_type TEXT DEFAULT 'tools',
       base_price REAL NOT NULL DEFAULT 0,
       dealer_price REAL NOT NULL DEFAULT 0,
       distributor_price REAL NOT NULL DEFAULT 0,
@@ -227,6 +228,13 @@ function initializeDatabase() {
     }
   }
 
+  const hwCols = db.prepare("PRAGMA table_info(hardware_products)").all().map(c => c.name);
+  if (!hwCols.includes('product_type')) {
+    db.exec("ALTER TABLE hardware_products ADD COLUMN product_type TEXT DEFAULT 'tools'");
+    // Set emulators as 'hardware' (performance hardware)
+    db.exec("UPDATE hardware_products SET product_type = 'hardware' WHERE category = 'Emulators'");
+  }
+
   const tuneCols = db.prepare("PRAGMA table_info(tune_orders)").all().map(c => c.name);
   if (!tuneCols.includes('price')) {
     db.exec("ALTER TABLE tune_orders ADD COLUMN price REAL DEFAULT 0");
@@ -282,16 +290,16 @@ function initializeDatabase() {
   const hwExists = db.prepare('SELECT id FROM hardware_products LIMIT 1').get();
   if (!hwExists) {
     const products = [
-      { name: 'ECC FlexRead Pro', sku: 'ECC-FRP-01', desc: 'Universal OBD2 ECU read/write tool. Supports bench and OBD protocols.', cat: 'Tools', base: 899, dealer: 699, dist: 549, qty: 25 },
-      { name: 'ECC BenchLink Cable Set', sku: 'ECC-BLC-01', desc: 'Boot-mode bench cable kit for Bosch, Siemens, Delphi ECUs.', cat: 'Cables', base: 349, dealer: 249, dist: 199, qty: 40 },
-      { name: 'ECC TCU Adapter', sku: 'ECC-TCU-01', desc: 'TCU read/write adapter for ZF, DSG, and PDK transmissions.', cat: 'Adapters', base: 499, dealer: 379, dist: 299, qty: 15 },
-      { name: 'ECC GPF/OPF Emulator', sku: 'ECC-GPF-01', desc: 'Gasoline particulate filter emulator module.', cat: 'Emulators', base: 199, dealer: 149, dist: 119, qty: 60 },
-      { name: 'ECC DPF Pressure Sensor Emulator', sku: 'ECC-DPF-EM', desc: 'Differential pressure sensor emulator for diesel DPF deletes.', cat: 'Emulators', base: 149, dealer: 109, dist: 89, qty: 50 },
-      { name: 'ECC NOx Sensor Emulator', sku: 'ECC-NOX-01', desc: 'NOx sensor signal emulator for SCR/AdBlue delete applications.', cat: 'Emulators', base: 179, dealer: 129, dist: 99, qty: 35 },
+      { name: 'ECC FlexRead Pro', sku: 'ECC-FRP-01', desc: 'Universal OBD2 ECU read/write tool. Supports bench and OBD protocols.', cat: 'Tools', type: 'tools', base: 899, dealer: 699, dist: 549, qty: 25 },
+      { name: 'ECC BenchLink Cable Set', sku: 'ECC-BLC-01', desc: 'Boot-mode bench cable kit for Bosch, Siemens, Delphi ECUs.', cat: 'Cables', type: 'tools', base: 349, dealer: 249, dist: 199, qty: 40 },
+      { name: 'ECC TCU Adapter', sku: 'ECC-TCU-01', desc: 'TCU read/write adapter for ZF, DSG, and PDK transmissions.', cat: 'Adapters', type: 'tools', base: 499, dealer: 379, dist: 299, qty: 15 },
+      { name: 'ECC GPF/OPF Emulator', sku: 'ECC-GPF-01', desc: 'Gasoline particulate filter emulator module.', cat: 'Emulators', type: 'hardware', base: 199, dealer: 149, dist: 119, qty: 60 },
+      { name: 'ECC DPF Pressure Sensor Emulator', sku: 'ECC-DPF-EM', desc: 'Differential pressure sensor emulator for diesel DPF deletes.', cat: 'Emulators', type: 'hardware', base: 149, dealer: 109, dist: 89, qty: 50 },
+      { name: 'ECC NOx Sensor Emulator', sku: 'ECC-NOX-01', desc: 'NOx sensor signal emulator for SCR/AdBlue delete applications.', cat: 'Emulators', type: 'hardware', base: 179, dealer: 129, dist: 99, qty: 35 },
     ];
-    const stmt = db.prepare('INSERT INTO hardware_products (id, name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const stmt = db.prepare('INSERT INTO hardware_products (id, name, sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (const p of products) {
-      stmt.run(uuidv4(), p.name, p.sku, p.desc, p.cat, p.base, p.dealer, p.dist, p.qty);
+      stmt.run(uuidv4(), p.name, p.sku, p.desc, p.cat, p.type, p.base, p.dealer, p.dist, p.qty);
     }
   }
 

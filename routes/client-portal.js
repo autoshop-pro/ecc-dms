@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const { getDb } = require('../database');
 const { authenticateToken } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
@@ -136,6 +137,9 @@ router.get('/orders/:id/files/:fileId/download', authenticateToken, requireClien
   const file = db.prepare('SELECT * FROM order_files WHERE id = ? AND order_id = ?').get(req.params.fileId, order.id);
   if (!file) return res.status(404).json({ error: 'File not found' });
 
+  if (!fs.existsSync(file.file_path)) {
+    return res.status(404).json({ error: 'File no longer available on server.' });
+  }
   res.download(file.file_path, file.file_name);
 });
 

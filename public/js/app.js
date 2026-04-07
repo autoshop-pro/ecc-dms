@@ -28,7 +28,9 @@ async function api(method, path, body, isFormData) {
 // ---- Authenticated File Download ----
 async function downloadFile(url, filename) {
   try {
-    const res = await fetch(`${API}${url}`, {
+    // Send token both as header and query param (fallback for CORS/browser issues)
+    const separator = url.includes('?') ? '&' : '?';
+    const res = await fetch(`${API}${url}${separator}token=${encodeURIComponent(TOKEN)}`, {
       headers: { 'Authorization': `Bearer ${TOKEN}` }
     });
     if (!res.ok) {
@@ -1267,6 +1269,7 @@ async function loadClients() {
                 <th>Name</th>
                 <th>Email</th>
                 <th>Phone</th>
+                <th>Portal</th>
                 <th>Vehicles</th>
                 <th>Orders</th>
                 ${isAdmin ? '<th>Current Dealer</th>' : ''}
@@ -1282,6 +1285,49 @@ async function loadClients() {
             <h3>No clients yet</h3>
             <p>Add a client or transfer one from another dealer</p>
           </div>`}
+        </div>
+      </div>
+
+      <!-- Add Client Modal -->
+      <div id="addClientModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+        <div style="background:var(--bg-card);border-radius:12px;padding:30px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;">
+          <h2 style="margin-bottom:5px;">Add New Client</h2>
+          <p class="text-muted" style="margin-bottom:20px;font-size:13px;">Create a new client in your database.</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">First Name *</label>
+              <input type="text" class="form-control" id="addClientFirst" placeholder="First name" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Last Name *</label>
+              <input type="text" class="form-control" id="addClientLast" placeholder="Last name" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Email</label>
+              <input type="email" class="form-control" id="addClientEmail" placeholder="client@email.com">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Phone</label>
+              <input type="tel" class="form-control" id="addClientPhone" placeholder="Phone number">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes</label>
+            <textarea class="form-control" id="addClientNotes" rows="2" placeholder="Optional notes..."></textarea>
+          </div>
+          <div style="margin-top:12px;padding:12px;background:var(--bg-hover);border-radius:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="addClientEnableLogin">
+              <span style="font-weight:600;">Enable client portal login</span>
+            </label>
+            <p style="font-size:12px;color:var(--text-muted);margin-top:4px;">
+              Client can log in with their email to view orders and download files. Requires email. Temporary password: firstname + 123.
+            </p>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:20px;">
+            <button class="btn btn-primary" onclick="saveNewClientFromList()">Save Client</button>
+            <button class="btn btn-secondary" onclick="closeAddClientModal()">Cancel</button>
+          </div>
         </div>
       </div>
 
@@ -1328,6 +1374,7 @@ function renderClientRows(clients) {
       <td class="td-primary">${c.first_name} ${c.last_name}</td>
       <td>${c.email || '—'}</td>
       <td>${c.phone || '—'}</td>
+      <td>${c.has_login ? '<span style="color:#81c784;">Enabled</span>' : '<span style="color:var(--text-muted);">—</span>'}</td>
       <td>${c.vehicle_count || 0}</td>
       <td>${c.order_count || 0}</td>
       ${isAdmin ? `<td>${c.current_dealer_company || '—'}</td>` : ''}
@@ -1345,7 +1392,44 @@ async function searchClients() {
 }
 
 function showAddClientPage() {
-  navigate('new-tune');
+  const modal = document.getElementById('addClientModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeAddClientModal() {
+  const modal = document.getElementById('addClientModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function saveNewClientFromList() {
+  const first = document.getElementById('addClientFirst').value.trim();
+  const last = document.getElementById('addClientLast').value.trim();
+  const email = document.getElementById('addClientEmail').value.trim();
+  const phone = document.getElementById('addClientPhone').value.trim();
+  const notes = document.getElementById('addClientNotes').value.trim();
+  const enableLogin = document.getElementById('addClientEnableLogin').checked;
+
+  if (!first || !last) return toast('First and last name required', 'error');
+  if (enableLogin && !email) return toast('Email is required to enable client login', 'error');
+
+  try {
+    const data = await api('POST', '/api/clients', {
+      first_name: first,
+      last_name: last,
+      email,
+      phone,
+      notes,
+      enable_login: enableLogin
+    });
+
+    let msg = 'Client added successfully!';
+    if (data.temp_password) msg += ' Temp password: ' + data.temp_password;
+    toast(msg, 'success');
+    closeAddClientModal();
+    loadClients();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 function showTransferClientModal() {

@@ -19,7 +19,8 @@ router.get('/', authenticateToken, (req, res) => {
     SELECT c.*, d.company_name as created_by_company,
       cd.company_name as current_dealer_company,
       (SELECT COUNT(*) FROM vehicles WHERE client_id = c.id) as vehicle_count,
-      (SELECT COUNT(*) FROM tune_orders WHERE client_id = c.id) as order_count
+      (SELECT COUNT(*) FROM tune_orders WHERE client_id = c.id) as order_count,
+      CASE WHEN c.password_hash IS NOT NULL THEN 1 ELSE 0 END as has_login
     FROM clients c
     LEFT JOIN dealers d ON c.created_by_dealer_id = d.id
     LEFT JOIN dealers cd ON c.current_dealer_id = cd.id
@@ -55,6 +56,8 @@ router.get('/', authenticateToken, (req, res) => {
   baseQuery += ' ORDER BY c.last_name, c.first_name';
 
   const clients = db.prepare(baseQuery).all(...params);
+  // Strip password_hash from response
+  clients.forEach(c => { delete c.password_hash; });
   res.json({ clients });
 });
 

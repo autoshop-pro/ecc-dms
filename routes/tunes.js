@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const { getDb, generateOrderNumber } = require('../database');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
@@ -303,12 +304,18 @@ router.get('/:id/download/:type', authenticateToken, (req, res) => {
 
   const fileType = req.params.type;
   if (fileType === 'stock' && order.stock_file_path) {
+    if (!fs.existsSync(order.stock_file_path)) {
+      return res.status(404).json({ error: 'Stock file no longer available on server. Files are lost after each deploy — data persistence needed.' });
+    }
     return res.download(order.stock_file_path, order.stock_file_name);
   } else if (fileType === 'tuned' && order.tuned_file_path) {
     // Gate tuned file download behind payment (admin always has access, clients can download if paid by dealer)
     const isAdmin = req.dealer && req.dealer.is_admin;
     if (!isAdmin && order.price > 0 && !order.is_paid) {
       return res.status(402).json({ error: 'Payment required before downloading tuned file.' });
+    }
+    if (!fs.existsSync(order.tuned_file_path)) {
+      return res.status(404).json({ error: 'Tuned file no longer available on server. Files are lost after each deploy — data persistence needed.' });
     }
     return res.download(order.tuned_file_path, order.tuned_file_name);
   }

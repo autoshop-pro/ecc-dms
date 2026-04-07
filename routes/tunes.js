@@ -80,8 +80,14 @@ router.get('/', authenticateToken, (req, res) => {
 
   const conditions = [];
   if (!req.dealer.is_admin) {
-    conditions.push('t.dealer_id = ?');
-    params.push(req.dealer.id);
+    if (req.dealer.role === 'distributor') {
+      // Distributors see their own orders + all their sub-dealers' orders
+      conditions.push('(t.dealer_id = ? OR t.dealer_id IN (SELECT id FROM dealers WHERE parent_dealer_id = ?))');
+      params.push(req.dealer.id, req.dealer.id);
+    } else {
+      conditions.push('t.dealer_id = ?');
+      params.push(req.dealer.id);
+    }
   }
   if (status) {
     conditions.push('t.status = ?');
@@ -118,11 +124,20 @@ router.get('/:id', authenticateToken, (req, res) => {
   `;
 
   if (!req.dealer.is_admin) {
-    query += ' AND t.dealer_id = ?';
-    const order = db.prepare(query).get(req.params.id, req.dealer.id);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    const files = db.prepare('SELECT * FROM order_files WHERE order_id = ?').all(order.id);
-    return res.json({ order, files });
+    if (req.dealer.role === 'distributor') {
+      // Distributor can view own orders + sub-dealer orders
+      query += ' AND (t.dealer_id = ? OR t.dealer_id IN (SELECT id FROM dealers WHERE parent_dealer_id = ?))';
+      const order = db.prepare(query).get(req.params.id, req.dealer.id, req.dealer.id);
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      const files = db.prepare('SELECT * FROM order_files WHERE order_id = ?').all(order.id);
+      return res.json({ order, files });
+    } else {
+      query += ' AND t.dealer_id = ?';
+      const order = db.prepare(query).get(req.params.id, req.dealer.id);
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      const files = db.prepare('SELECT * FROM order_files WHERE order_id = ?').all(order.id);
+      return res.json({ order, files });
+    }
   }
 
   const order = db.prepare(query).get(req.params.id);
@@ -240,13 +255,25 @@ router.post('/:id/pay', authenticateToken, (req, res) => {
     });
   }
 
-  // Charge
+  // Charge dealer
   db.prepare('UPDATE dealers SET account_balance = account_balance - ?, updated_at = datetime(\'now\') WHERE id = ?')
     .run(order.price, order.dealer_id);
   db.prepare('UPDATE tune_orders SET is_paid = 1, updated_at = datetime(\'now\') WHERE id = ?')
     .run(order.id);
   db.prepare('INSERT INTO account_transactions (id, dealer_id, amount, type, description, order_id) VALUES (?, ?, ?, ?, ?, ?)')
     .run(uuidv4(), order.dealer_id, -order.price, 'charge', `Tune order ${order.order_number}`, order.id);
+
+  // Distributor margin: if dealer has a parent distributor, credit them their cut
+  const dealerInfo = db.prepare('SELECT parent_dealer_id, discount_pct FROM dealers WHERE id = ?').get(order.dealer_id);
+  if (dealerInfo && dealerInfo.parent_dealer_id) {
+    const distCut = order.price * (dealerInfo.discount_pct / 100);
+    if (distCut > 0) {
+      db.prepare('UPDATE dealers SET account_balance = account_balance + ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(distCut, dealerInfo.parent_dealer_id);
+      db.prepare('INSERT INTO account_transactions (id, dealer_id, amount, type, description, order_id) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(uuidv4(), dealerInfo.parent_dealer_id, distCut, 'commission', `Distributor commission on ${order.order_number} (${dealerInfo.discount_pct}%)`, order.id);
+    }
+  }
 
   const updated = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(order.id);
   res.json({ order: updated });
@@ -258,8 +285,15 @@ router.get('/:id/download/:type', authenticateToken, (req, res) => {
   const order = db.prepare('SELECT * FROM tune_orders WHERE id = ?').get(req.params.id);
 
   if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  // Access check: admin always, dealer for own orders, distributor for sub-dealer orders
   if (!req.dealer.is_admin && order.dealer_id !== req.dealer.id) {
-    return res.status(403).json({ error: 'Access denied' });
+    if (req.dealer.role === 'distributor') {
+      const subDealer = db.prepare('SELECT id FROM dealers WHERE id = ? AND parent_dealer_id = ?').get(order.dealer_id, req.dealer.id);
+      if (!subDealer) return res.status(403).json({ error: 'Access denied' });
+    } else {
+      return res.status(403).json({ error: 'Access denied' });
+    }
   }
 
   const fileType = req.params.type;

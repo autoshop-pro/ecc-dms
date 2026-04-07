@@ -120,6 +120,72 @@ router.post('/kits/order', authenticateToken, (req, res) => {
   res.status(201).json({ order });
 });
 
+// POST /api/hardware/kits - create a new kit (admin or distributor)
+router.post('/kits', authenticateToken, (req, res) => {
+  if (!req.dealer.is_admin && req.dealer.role !== 'distributor') {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+  const { name, sku, description, badge, base_price, dealer_price, distributor_price, sort_order, items } = req.body;
+  if (!name || base_price == null || dealer_price == null) {
+    return res.status(400).json({ error: 'Name, base price, and dealer price are required' });
+  }
+
+  const db = getDb();
+  const kitId = uuidv4();
+  db.prepare(`
+    INSERT INTO hardware_kits (id, name, sku, description, badge, base_price, dealer_price, distributor_price, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(kitId, name, sku || null, description, badge || null, base_price, dealer_price, distributor_price || 0, sort_order || 0);
+
+  // Add kit items
+  if (items && items.length) {
+    const stmt = db.prepare('INSERT INTO hardware_kit_items (id, kit_id, product_id, quantity) VALUES (?, ?, ?, ?)');
+    for (const item of items) {
+      stmt.run(uuidv4(), kitId, item.product_id, item.quantity || 1);
+    }
+  }
+
+  const kit = db.prepare('SELECT * FROM hardware_kits WHERE id = ?').get(kitId);
+  res.status(201).json({ kit });
+});
+
+// PUT /api/hardware/kits/:id - update a kit (admin or distributor)
+router.put('/kits/:id', authenticateToken, (req, res) => {
+  if (!req.dealer.is_admin && req.dealer.role !== 'distributor') {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+  const { name, sku, description, badge, base_price, dealer_price, distributor_price, sort_order, is_active, items } = req.body;
+  const db = getDb();
+
+  db.prepare(`
+    UPDATE hardware_kits SET name=?, sku=?, description=?, badge=?, base_price=?, dealer_price=?, distributor_price=?,
+      sort_order=?, is_active=?, updated_at=datetime('now')
+    WHERE id = ?
+  `).run(name, sku, description, badge, base_price, dealer_price, distributor_price || 0, sort_order || 0, is_active != null ? (is_active ? 1 : 0) : 1, req.params.id);
+
+  // Replace kit items if provided
+  if (items) {
+    db.prepare('DELETE FROM hardware_kit_items WHERE kit_id = ?').run(req.params.id);
+    const stmt = db.prepare('INSERT INTO hardware_kit_items (id, kit_id, product_id, quantity) VALUES (?, ?, ?, ?)');
+    for (const item of items) {
+      stmt.run(uuidv4(), req.params.id, item.product_id, item.quantity || 1);
+    }
+  }
+
+  const kit = db.prepare('SELECT * FROM hardware_kits WHERE id = ?').get(req.params.id);
+  res.json({ kit });
+});
+
+// DELETE /api/hardware/kits/:id - deactivate a kit (admin or distributor)
+router.delete('/kits/:id', authenticateToken, (req, res) => {
+  if (!req.dealer.is_admin && req.dealer.role !== 'distributor') {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+  const db = getDb();
+  db.prepare('UPDATE hardware_kits SET is_active = 0, updated_at = datetime(\'now\') WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
 // GET /api/hardware/orders - list hardware orders (MUST be before /:id)
 router.get('/orders', authenticateToken, (req, res) => {
   const db = getDb();
@@ -149,9 +215,12 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ product });
 });
 
-// POST /api/hardware - create product (admin)
-router.post('/', authenticateToken, requireAdmin, (req, res) => {
-  const { name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty, image_url } = req.body;
+// POST /api/hardware - create product (admin or distributor)
+router.post('/', authenticateToken, (req, res) => {
+  if (!req.dealer.is_admin && req.dealer.role !== 'distributor') {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+  const { name, sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty, image_url } = req.body;
 
   if (!name || base_price == null) {
     return res.status(400).json({ error: 'Name and base price are required' });
@@ -161,24 +230,27 @@ router.post('/', authenticateToken, requireAdmin, (req, res) => {
   const id = uuidv4();
 
   db.prepare(`
-    INSERT INTO hardware_products (id, name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty, image_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name, sku, description, category, base_price, dealer_price || 0, distributor_price || 0, stock_qty || 0, image_url);
+    INSERT INTO hardware_products (id, name, sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty, image_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, sku, description, category, product_type || 'tools', base_price, dealer_price || 0, distributor_price || 0, stock_qty || 0, image_url);
 
   const product = db.prepare('SELECT * FROM hardware_products WHERE id = ?').get(id);
   res.status(201).json({ product });
 });
 
-// PUT /api/hardware/:id - update product (admin)
-router.put('/:id', authenticateToken, requireAdmin, (req, res) => {
-  const { name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty, image_url, is_active } = req.body;
+// PUT /api/hardware/:id - update product (admin or distributor)
+router.put('/:id', authenticateToken, (req, res) => {
+  if (!req.dealer.is_admin && req.dealer.role !== 'distributor') {
+    return res.status(403).json({ error: 'Admin or distributor access required' });
+  }
+  const { name, sku, description, category, product_type, base_price, dealer_price, distributor_price, stock_qty, image_url, is_active } = req.body;
   const db = getDb();
 
   db.prepare(`
-    UPDATE hardware_products SET name=?, sku=?, description=?, category=?, base_price=?, dealer_price=?, distributor_price=?,
+    UPDATE hardware_products SET name=?, sku=?, description=?, category=?, product_type=?, base_price=?, dealer_price=?, distributor_price=?,
       stock_qty=?, image_url=?, is_active=?, updated_at=datetime('now')
     WHERE id = ?
-  `).run(name, sku, description, category, base_price, dealer_price, distributor_price, stock_qty, image_url, is_active ? 1 : 0, req.params.id);
+  `).run(name, sku, description, category, product_type || 'tools', base_price, dealer_price, distributor_price, stock_qty, image_url, is_active ? 1 : 0, req.params.id);
 
   const product = db.prepare('SELECT * FROM hardware_products WHERE id = ?').get(req.params.id);
   res.json({ product });

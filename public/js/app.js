@@ -60,6 +60,7 @@ function render(page) {
     case 'vehicles': loadVehicles(); break;
     case 'tools': loadTools(); break;
     case 'perf-hardware': loadPerfHardware(); break;
+    case 'manage-catalog': loadManageCatalog(); break;
     case 'account': loadAccount(); break;
     case 'admin-dealers': loadAdminDealers(); break;
     case 'manage-dealers': loadManageDealers(); break;
@@ -170,6 +171,10 @@ function renderLayout(page) {
             <div class="nav-item ${page === 'perf-hardware' ? 'active' : ''}" data-page="perf-hardware">
               <span class="nav-icon">⚡</span> ECC Performance Hardware
             </div>
+            ${isAdmin || isDistributor ? `
+            <div class="nav-item ${page === 'manage-catalog' ? 'active' : ''}" data-page="manage-catalog">
+              <span class="nav-icon">📦</span> Manage Catalog
+            </div>` : ''}
             ${!isAdmin ? `
             <div class="nav-item ${page === 'account' ? 'active' : ''}" data-page="account">
               <span class="nav-icon">💰</span> Account & Billing
@@ -1619,6 +1624,311 @@ async function submitHardwareOrder() {
     toast('Hardware order placed successfully!', 'success');
     _cart = [];
     navigate(location.hash.replace('#','') || 'tools');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// ---- MANAGE CATALOG (admin & distributor) ----
+async function loadManageCatalog() {
+  const main = document.getElementById('mainContent');
+  try {
+    const [prodData, kitData] = await Promise.all([
+      api('GET', '/api/hardware'),
+      api('GET', '/api/hardware/kits')
+    ]);
+    const products = prodData.products;
+    const kits = kitData.kits;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Manage Catalog</h1>
+          <p class="page-subtitle">Products, kits & bundles</p>
+        </div>
+      </div>
+
+      <!-- KITS SECTION -->
+      <div class="card" style="margin-bottom:24px;">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <h3>Tuning Kits & Bundles</h3>
+          <button class="btn btn-primary btn-sm" onclick="showKitForm()">+ New Kit</button>
+        </div>
+
+        <div id="kitFormArea" style="display:none;padding:20px;border-bottom:1px solid var(--border);">
+          <input type="hidden" id="kfId">
+          <div class="form-grid">
+            <div class="form-group"><label>Kit Name *</label><input class="form-control" id="kfName"></div>
+            <div class="form-group"><label>SKU</label><input class="form-control" id="kfSku"></div>
+            <div class="form-group" style="grid-column:span 2;"><label>Description</label><textarea class="form-control" id="kfDesc" rows="2"></textarea></div>
+            <div class="form-group"><label>Badge Label</label><input class="form-control" id="kfBadge" placeholder="e.g. Best Value, Most Popular"></div>
+            <div class="form-group"><label>MSRP ($)</label><input type="number" step="0.01" class="form-control" id="kfBase"></div>
+            <div class="form-group"><label>Dealer Price ($)</label><input type="number" step="0.01" class="form-control" id="kfDealer"></div>
+            <div class="form-group"><label>Distributor Price ($)</label><input type="number" step="0.01" class="form-control" id="kfDist"></div>
+            <div class="form-group"><label>Sort Order</label><input type="number" class="form-control" id="kfSort" value="0"></div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <label style="font-weight:600;font-size:13px;margin-bottom:8px;display:block;">Kit Items (select products & quantities):</label>
+            <div id="kitItemsBuilder">
+              ${products.map(p => `
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                  <input type="checkbox" id="kp_${p.id}" data-product-id="${p.id}">
+                  <label for="kp_${p.id}" style="flex:1;font-size:13px;">${p.name} <span style="color:var(--text-muted);">(${p.category})</span></label>
+                  <input type="number" min="1" value="1" style="width:60px;" class="form-control" id="kpq_${p.id}">
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div style="display:flex;gap:12px;margin-top:16px;">
+            <button class="btn btn-primary" onclick="saveKit()">Save Kit</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('kitFormArea').style.display='none'">Cancel</button>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>SKU</th><th>Badge</th><th>MSRP</th><th>Dealer</th><th>Dist.</th><th>Items</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${kits.map(k => `
+                <tr>
+                  <td class="td-primary">${k.name}</td>
+                  <td style="font-family:monospace;font-size:12px;">${k.sku || '—'}</td>
+                  <td>${k.badge || '—'}</td>
+                  <td>$${k.msrp.toFixed(2)}</td>
+                  <td style="font-weight:600;">$${k.your_price.toFixed(2)}</td>
+                  <td>$${(k.distributor_price || 0).toFixed(2)}</td>
+                  <td>${k.items.length} products</td>
+                  <td><span class="badge badge-${k.is_active ? 'completed' : 'cancelled'}">${k.is_active ? 'Active' : 'Inactive'}</span></td>
+                  <td style="white-space:nowrap;">
+                    <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="editKit('${k.id}')">Edit</button>
+                    ${k.is_active ? `<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="deactivateKit('${k.id}','${k.name}')">Disable</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- PRODUCTS SECTION -->
+      <div class="card">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <h3>Individual Products</h3>
+          <button class="btn btn-primary btn-sm" onclick="showProductForm()">+ New Product</button>
+        </div>
+
+        <div id="productFormArea" style="display:none;padding:20px;border-bottom:1px solid var(--border);">
+          <input type="hidden" id="pfId">
+          <div class="form-grid">
+            <div class="form-group"><label>Product Name *</label><input class="form-control" id="pfName"></div>
+            <div class="form-group"><label>SKU</label><input class="form-control" id="pfSku"></div>
+            <div class="form-group"><label>Category</label>
+              <select class="form-control" id="pfCategory">
+                <option value="Tools">Tools</option>
+                <option value="Cables">Cables</option>
+                <option value="Adapters">Adapters</option>
+                <option value="Emulators">Emulators</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Type</label>
+              <select class="form-control" id="pfType">
+                <option value="tools">Tools (tuning tools)</option>
+                <option value="hardware">Performance Hardware</option>
+              </select>
+            </div>
+            <div class="form-group" style="grid-column:span 2;"><label>Description</label><textarea class="form-control" id="pfDesc" rows="2"></textarea></div>
+            <div class="form-group"><label>MSRP ($)</label><input type="number" step="0.01" class="form-control" id="pfBase"></div>
+            <div class="form-group"><label>Dealer Price ($)</label><input type="number" step="0.01" class="form-control" id="pfDealer"></div>
+            <div class="form-group"><label>Distributor Price ($)</label><input type="number" step="0.01" class="form-control" id="pfDist"></div>
+            <div class="form-group"><label>Stock Qty</label><input type="number" class="form-control" id="pfStock" value="0"></div>
+          </div>
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <button class="btn btn-primary" onclick="saveProduct()">Save Product</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('productFormArea').style.display='none'">Cancel</button>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr><th>Product</th><th>SKU</th><th>Category</th><th>Type</th><th>MSRP</th><th>Dealer</th><th>Dist.</th><th>Stock</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${products.map(p => `
+                <tr>
+                  <td class="td-primary">${p.name}</td>
+                  <td style="font-family:monospace;font-size:12px;">${p.sku || '—'}</td>
+                  <td>${p.category || '—'}</td>
+                  <td>${p.product_type === 'hardware' ? 'Perf. HW' : 'Tools'}</td>
+                  <td>$${p.msrp.toFixed(2)}</td>
+                  <td style="font-weight:600;">$${p.your_price.toFixed(2)}</td>
+                  <td>$${(p.distributor_price || 0).toFixed(2)}</td>
+                  <td>${p.stock_qty}</td>
+                  <td>
+                    <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="editProduct('${p.id}')">Edit</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    // Store for edit lookups
+    window._catalogProducts = products;
+    window._catalogKits = kits;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+function showKitForm(clear = true) {
+  if (clear) {
+    document.getElementById('kfId').value = '';
+    document.getElementById('kfName').value = '';
+    document.getElementById('kfSku').value = '';
+    document.getElementById('kfDesc').value = '';
+    document.getElementById('kfBadge').value = '';
+    document.getElementById('kfBase').value = '';
+    document.getElementById('kfDealer').value = '';
+    document.getElementById('kfDist').value = '';
+    document.getElementById('kfSort').value = '0';
+    // Uncheck all product checkboxes
+    document.querySelectorAll('#kitItemsBuilder input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('#kitItemsBuilder input[type="number"]').forEach(inp => { inp.value = 1; });
+  }
+  document.getElementById('kitFormArea').style.display = 'block';
+}
+
+function editKit(kitId) {
+  const kit = window._catalogKits.find(k => k.id === kitId);
+  if (!kit) return;
+  document.getElementById('kfId').value = kit.id;
+  document.getElementById('kfName').value = kit.name;
+  document.getElementById('kfSku').value = kit.sku || '';
+  document.getElementById('kfDesc').value = kit.description || '';
+  document.getElementById('kfBadge').value = kit.badge || '';
+  document.getElementById('kfBase').value = kit.base_price;
+  document.getElementById('kfDealer').value = kit.dealer_price;
+  document.getElementById('kfDist').value = kit.distributor_price || '';
+  document.getElementById('kfSort').value = kit.sort_order || 0;
+
+  // Set checkboxes for kit items
+  document.querySelectorAll('#kitItemsBuilder input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  document.querySelectorAll('#kitItemsBuilder input[type="number"]').forEach(inp => { inp.value = 1; });
+  (kit.items || []).forEach(item => {
+    const cb = document.getElementById('kp_' + item.product_id);
+    const qty = document.getElementById('kpq_' + item.product_id);
+    if (cb) cb.checked = true;
+    if (qty) qty.value = item.quantity;
+  });
+
+  showKitForm(false);
+}
+
+async function saveKit() {
+  const id = document.getElementById('kfId').value;
+  const items = [];
+  document.querySelectorAll('#kitItemsBuilder input[type="checkbox"]:checked').forEach(cb => {
+    const productId = cb.dataset.productId;
+    const qty = parseInt(document.getElementById('kpq_' + productId).value) || 1;
+    items.push({ product_id: productId, quantity: qty });
+  });
+
+  const payload = {
+    name: document.getElementById('kfName').value,
+    sku: document.getElementById('kfSku').value || null,
+    description: document.getElementById('kfDesc').value,
+    badge: document.getElementById('kfBadge').value || null,
+    base_price: parseFloat(document.getElementById('kfBase').value) || 0,
+    dealer_price: parseFloat(document.getElementById('kfDealer').value) || 0,
+    distributor_price: parseFloat(document.getElementById('kfDist').value) || 0,
+    sort_order: parseInt(document.getElementById('kfSort').value) || 0,
+    is_active: true,
+    items
+  };
+
+  try {
+    if (id) {
+      await api('PUT', `/api/hardware/kits/${id}`, payload);
+      toast('Kit updated!', 'success');
+    } else {
+      await api('POST', '/api/hardware/kits', payload);
+      toast('Kit created!', 'success');
+    }
+    loadManageCatalog();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deactivateKit(kitId, kitName) {
+  if (!confirm(`Disable kit "${kitName}"? It will no longer appear in the shop.`)) return;
+  try {
+    await api('DELETE', `/api/hardware/kits/${kitId}`);
+    toast(`${kitName} disabled`, 'success');
+    loadManageCatalog();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function showProductForm(clear = true) {
+  if (clear) {
+    document.getElementById('pfId').value = '';
+    document.getElementById('pfName').value = '';
+    document.getElementById('pfSku').value = '';
+    document.getElementById('pfCategory').value = 'Tools';
+    document.getElementById('pfType').value = 'tools';
+    document.getElementById('pfDesc').value = '';
+    document.getElementById('pfBase').value = '';
+    document.getElementById('pfDealer').value = '';
+    document.getElementById('pfDist').value = '';
+    document.getElementById('pfStock').value = '0';
+  }
+  document.getElementById('productFormArea').style.display = 'block';
+}
+
+function editProduct(productId) {
+  const p = window._catalogProducts.find(x => x.id === productId);
+  if (!p) return;
+  document.getElementById('pfId').value = p.id;
+  document.getElementById('pfName').value = p.name;
+  document.getElementById('pfSku').value = p.sku || '';
+  document.getElementById('pfCategory').value = p.category || 'Tools';
+  document.getElementById('pfType').value = p.product_type || 'tools';
+  document.getElementById('pfDesc').value = p.description || '';
+  document.getElementById('pfBase').value = p.base_price;
+  document.getElementById('pfDealer').value = p.dealer_price;
+  document.getElementById('pfDist').value = p.distributor_price;
+  document.getElementById('pfStock').value = p.stock_qty;
+  showProductForm(false);
+}
+
+async function saveProduct() {
+  const id = document.getElementById('pfId').value;
+  const payload = {
+    name: document.getElementById('pfName').value,
+    sku: document.getElementById('pfSku').value || null,
+    category: document.getElementById('pfCategory').value,
+    product_type: document.getElementById('pfType').value,
+    description: document.getElementById('pfDesc').value,
+    base_price: parseFloat(document.getElementById('pfBase').value) || 0,
+    dealer_price: parseFloat(document.getElementById('pfDealer').value) || 0,
+    distributor_price: parseFloat(document.getElementById('pfDist').value) || 0,
+    stock_qty: parseInt(document.getElementById('pfStock').value) || 0,
+    is_active: true
+  };
+
+  try {
+    if (id) {
+      await api('PUT', `/api/hardware/${id}`, payload);
+      toast('Product updated!', 'success');
+    } else {
+      await api('POST', '/api/hardware', payload);
+      toast('Product created!', 'success');
+    }
+    loadManageCatalog();
   } catch (err) { toast(err.message, 'error'); }
 }
 

@@ -23,6 +23,27 @@ async function api(method, path, body, isFormData) {
   return data;
 }
 
+// ---- Authenticated File Download ----
+async function downloadFile(url, filename) {
+  try {
+    const res = await fetch(`${API}${url}`, {
+      headers: { 'Authorization': `Bearer ${TOKEN}` }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Download failed' }));
+      return toast(err.error || 'Download failed', 'error');
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  } catch (err) { toast('Download failed: ' + err.message, 'error'); }
+}
+
 // ---- Toast ----
 function toast(message, type = 'info') {
   const container = document.getElementById('toastContainer');
@@ -299,7 +320,7 @@ async function loadDashboard() {
                 </div>
                 <div style="text-align:right;min-width:140px;">
                   <div style="font-size:13px;color:var(--accent);font-weight:600;margin-bottom:4px;">${formatTuneType(o.tune_type)}</div>
-                  ${o.stock_file_name ? `<a href="/api/tunes/${o.id}/download/stock" class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;margin-bottom:6px;display:inline-block;">📥 Stock File</a>` : ''}
+                  ${o.stock_file_name ? `<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;margin-bottom:6px;" onclick="downloadFile('/api/tunes/${o.id}/download/stock','${(o.stock_file_name||'stock.bin').replace(/'/g,"\\'")}')">📥 Stock File</button>` : ''}
                 </div>
               </div>
 
@@ -994,8 +1015,8 @@ async function loadOrderDetail(orderId) {
           </div>` : ''}
 
           <div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;">
-            ${o.stock_file_name ? `<a href="/api/tunes/${o.id}/download/stock" class="btn btn-secondary btn-sm">📥 Download Stock File (${o.stock_file_name})</a>` : ''}
-            ${o.tuned_file_name && (DEALER.is_admin || o.is_paid || o.price <= 0) ? `<a href="/api/tunes/${o.id}/download/tuned" class="btn btn-primary btn-sm">📥 Download Tuned File (${o.tuned_file_name})</a>` : ''}
+            ${o.stock_file_name ? `<button class="btn btn-secondary btn-sm" onclick="downloadFile('/api/tunes/${o.id}/download/stock','${(o.stock_file_name||'stock.bin').replace(/'/g,"\\'")}')">📥 Download Stock File (${o.stock_file_name})</button>` : ''}
+            ${o.tuned_file_name && (DEALER.is_admin || o.is_paid || o.price <= 0) ? `<button class="btn btn-primary btn-sm" onclick="downloadFile('/api/tunes/${o.id}/download/tuned','${(o.tuned_file_name||'tuned.bin').replace(/'/g,"\\'")}')">📥 Download Tuned File (${o.tuned_file_name})</button>` : ''}
             ${o.tuned_file_name && !DEALER.is_admin && o.price > 0 && !o.is_paid ? `<button class="btn btn-primary btn-sm" onclick="payForTune('${o.id}', ${o.price})">💳 Pay $${o.price.toFixed(2)} to Download</button>` : ''}
           </div>
         </div>

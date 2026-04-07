@@ -175,10 +175,9 @@ function renderLayout(page) {
             <div class="nav-item ${page === 'manage-catalog' ? 'active' : ''}" data-page="manage-catalog">
               <span class="nav-icon">📦</span> Manage Catalog
             </div>` : ''}
-            ${!isAdmin ? `
             <div class="nav-item ${page === 'account' ? 'active' : ''}" data-page="account">
               <span class="nav-icon">💰</span> Account & Billing
-            </div>` : ''}
+            </div>
           </div>
           <div class="nav-section">
             <div class="nav-section-title">Management</div>
@@ -1936,12 +1935,18 @@ async function saveProduct() {
 async function loadAccount() {
   const main = document.getElementById('mainContent');
   try {
-    const [me, txData] = await Promise.all([
+    const [me, txData, depData] = await Promise.all([
       api('GET', '/api/auth/me'),
-      api('GET', '/api/dealers/transactions')
+      api('GET', '/api/dealers/transactions'),
+      api('GET', '/api/pricing/deposits')
     ]);
     const d = me.dealer;
     const txs = txData.transactions;
+    const deposits = depData.requests;
+
+    const isAdminOrDist = DEALER.is_admin || DEALER.role === 'distributor';
+    const pendingDeposits = deposits.filter(r => r.status === 'pending');
+    const myPending = deposits.filter(r => r.dealer_id === DEALER.id && r.status === 'pending');
 
     main.innerHTML = `
       <div class="page-header">
@@ -1955,21 +1960,58 @@ async function loadAccount() {
         </div>
       </div>
 
+      ${!DEALER.is_admin ? `
       <div class="card" style="margin-bottom:20px;">
-        <div class="card-header"><h3>Add Funds</h3></div>
+        <div class="card-header"><h3>Request Funds</h3></div>
         <div class="card-body">
-          <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Add funds to your account balance. Contact ECC for wire transfer or other payment methods.</p>
-          <div style="display:flex;gap:12px;align-items:center;">
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Submit a deposit request. Your ${DEALER.role === 'distributor' ? 'ECC HQ' : (d.parent_dealer_id ? 'distributor' : 'ECC HQ')} will process payment and approve the credit to your account.</p>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
             <div style="display:flex;gap:8px;">
-              ${[100, 250, 500, 1000].map(amt => `
+              ${[500, 1000, 2500, 5000].map(amt => `
                 <button class="btn btn-secondary btn-sm" onclick="document.getElementById('depositAmount').value=${amt}">$${amt}</button>
               `).join('')}
             </div>
             <input type="number" step="0.01" min="1" class="form-control" id="depositAmount" placeholder="Amount" style="width:140px;">
-            <button class="btn btn-primary" onclick="depositFunds()">Add Funds</button>
+            <button class="btn btn-primary" onclick="depositFunds()">Submit Request</button>
           </div>
+          ${myPending.length ? `
+          <div style="margin-top:16px;padding:12px;background:var(--bg-primary);border-radius:8px;">
+            <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Pending Requests</div>
+            ${myPending.map(r => `
+              <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;">
+                <span>$${r.amount.toFixed(2)}</span>
+                <span class="badge badge-pending">Pending</span>
+                <span style="color:var(--text-muted);">${formatDate(r.created_at)}</span>
+              </div>
+            `).join('')}
+          </div>` : ''}
         </div>
-      </div>
+      </div>` : ''}
+
+      ${isAdminOrDist && pendingDeposits.length ? `
+      <div class="card" style="margin-bottom:20px;border-left:3px solid var(--primary);">
+        <div class="card-header"><h3>Pending Deposit Requests (${pendingDeposits.length})</h3></div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr><th>Dealer</th><th>Amount</th><th>Requested</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              ${pendingDeposits.map(r => `
+                <tr>
+                  <td class="td-primary">${r.company_name}<br><span style="font-size:11px;color:var(--text-muted);">${r.contact_name}</span></td>
+                  <td style="font-size:18px;font-weight:700;color:var(--primary);">$${r.amount.toFixed(2)}</td>
+                  <td>${formatDate(r.created_at)}</td>
+                  <td style="white-space:nowrap;">
+                    <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="approveDeposit('${r.id}','${r.company_name}',${r.amount})">Approve</button>
+                    <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="rejectDeposit('${r.id}','${r.company_name}')">Reject</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
 
       <div class="card">
         <div class="card-header"><h3>Transaction History</h3></div>
@@ -1983,7 +2025,7 @@ async function loadAccount() {
               ${txs.map(t => `
                 <tr>
                   <td>${formatDate(t.created_at)}</td>
-                  <td><span class="badge badge-${t.type === 'deposit' ? 'completed' : 'pending'}">${t.type}</span></td>
+                  <td><span class="badge badge-${t.type === 'deposit' || t.type === 'commission' ? 'completed' : 'pending'}">${t.type}</span></td>
                   <td>${t.description || '—'}</td>
                   <td>${t.order_number || '—'}</td>
                   <td style="font-weight:600;color:${t.amount >= 0 ? '#81c784' : '#ef5350'};">${t.amount >= 0 ? '+' : ''}$${t.amount.toFixed(2)}</td>
@@ -1994,7 +2036,7 @@ async function loadAccount() {
           <div class="empty-state">
             <div class="empty-icon">💰</div>
             <h3>No transactions yet</h3>
-            <p>Add funds to get started</p>
+            <p>Submit a deposit request to get started</p>
           </div>`}
         </div>
       </div>
@@ -2007,10 +2049,28 @@ async function loadAccount() {
 async function depositFunds() {
   const amount = parseFloat(document.getElementById('depositAmount').value);
   if (!amount || amount <= 0) return toast('Enter a valid amount', 'error');
-  if (!confirm(`Add $${amount.toFixed(2)} to your account?`)) return;
+  if (!confirm(`Submit a deposit request for $${amount.toFixed(2)}? This will be reviewed and approved by your account manager.`)) return;
 
   try {
     const data = await api('POST', '/api/pricing/deposit', { amount });
+    toast(data.message, 'success');
+    loadAccount();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function approveDeposit(requestId, companyName, amount) {
+  if (!confirm(`Approve $${amount.toFixed(2)} deposit for ${companyName}? This will credit their account.`)) return;
+  try {
+    const data = await api('PUT', `/api/pricing/deposits/${requestId}/approve`);
+    toast(data.message, 'success');
+    loadAccount();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function rejectDeposit(requestId, companyName) {
+  if (!confirm(`Reject deposit request from ${companyName}?`)) return;
+  try {
+    const data = await api('PUT', `/api/pricing/deposits/${requestId}/reject`);
     toast(data.message, 'success');
     loadAccount();
   } catch (err) { toast(err.message, 'error'); }

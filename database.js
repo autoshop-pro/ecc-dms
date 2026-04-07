@@ -197,6 +197,20 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES hardware_products(id)
     );
 
+    -- Deposit requests (pending until approved by distributor or admin)
+    CREATE TABLE IF NOT EXISTS deposit_requests (
+      id TEXT PRIMARY KEY,
+      dealer_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      status TEXT DEFAULT 'pending',
+      notes TEXT,
+      approved_by TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (dealer_id) REFERENCES dealers(id),
+      FOREIGN KEY (approved_by) REFERENCES dealers(id)
+    );
+
     -- Tune pricing table (admin sets prices per tune type)
     CREATE TABLE IF NOT EXISTS tune_pricing (
       id TEXT PRIMARY KEY,

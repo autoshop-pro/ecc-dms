@@ -5,6 +5,8 @@
 const API = '';
 let TOKEN = localStorage.getItem('ecc_token');
 let DEALER = JSON.parse(localStorage.getItem('ecc_dealer') || 'null');
+let CLIENT_USER = JSON.parse(localStorage.getItem('ecc_client') || 'null');
+let USER_TYPE = localStorage.getItem('ecc_user_type') || null;
 let TUNE_OPTIONS = null;
 
 // ---- API Helper ----
@@ -63,11 +65,29 @@ function navigate(page, params = {}) {
 
 function render(page) {
   const app = document.getElementById('app');
-  if (!TOKEN || !DEALER) {
+  if (!TOKEN || (!DEALER && !CLIENT_USER)) {
     app.innerHTML = renderLogin();
     bindLogin();
     return;
   }
+
+  // Client portal routing
+  if (USER_TYPE === 'client' && CLIENT_USER) {
+    app.innerHTML = renderClientLayout(page);
+    bindClientSidebar(page);
+
+    switch (page) {
+      case 'portal-dashboard': loadPortalDashboard(); break;
+      case 'portal-orders': loadPortalOrders(); break;
+      case 'portal-order-detail': loadPortalOrderDetail(window._params.id); break;
+      case 'portal-vehicles': loadPortalVehicles(); break;
+      case 'portal-settings': loadPortalSettings(); break;
+      default: loadPortalDashboard();
+    }
+    return;
+  }
+
+  // Dealer routing
   app.innerHTML = renderLayout(page);
   bindSidebar(page);
 
@@ -97,13 +117,13 @@ function renderLogin() {
       <div class="login-card">
         <div class="login-logo">
           <img src="/images/ecc-logo.png" alt="ECC Tuned" onerror="this.style.display='none'">
-          <h2>Dealer Portal</h2>
+          <h2>ECC Tuned Portal</h2>
         </div>
         <div class="login-error" id="loginError"></div>
         <form id="loginForm">
           <div class="form-group">
             <label>Email Address</label>
-            <input type="email" id="loginEmail" placeholder="dealer@example.com" required autocomplete="email">
+            <input type="email" id="loginEmail" placeholder="your@email.com" required autocomplete="email">
           </div>
           <div class="form-group">
             <label>Password</label>
@@ -114,7 +134,7 @@ function renderLogin() {
           </button>
         </form>
         <p style="text-align:center; margin-top:24px; font-size:12px; color:var(--text-muted);">
-          Contact ECC to obtain dealer credentials
+          Dealers & clients — use your registered email to sign in
         </p>
       </div>
     </div>
@@ -136,10 +156,23 @@ function bindLogin() {
     try {
       const data = await api('POST', '/api/auth/login', { email, password });
       TOKEN = data.token;
-      DEALER = data.dealer;
+      USER_TYPE = data.user_type;
       localStorage.setItem('ecc_token', TOKEN);
-      localStorage.setItem('ecc_dealer', JSON.stringify(DEALER));
-      navigate('dashboard');
+      localStorage.setItem('ecc_user_type', data.user_type);
+
+      if (data.user_type === 'client') {
+        CLIENT_USER = data.client;
+        DEALER = null;
+        localStorage.setItem('ecc_client', JSON.stringify(CLIENT_USER));
+        localStorage.removeItem('ecc_dealer');
+        navigate('portal-dashboard');
+      } else {
+        DEALER = data.dealer;
+        CLIENT_USER = null;
+        localStorage.setItem('ecc_dealer', JSON.stringify(DEALER));
+        localStorage.removeItem('ecc_client');
+        navigate('dashboard');
+      }
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.add('show');
@@ -152,8 +185,12 @@ function bindLogin() {
 function logout() {
   TOKEN = null;
   DEALER = null;
+  CLIENT_USER = null;
+  USER_TYPE = null;
   localStorage.removeItem('ecc_token');
   localStorage.removeItem('ecc_dealer');
+  localStorage.removeItem('ecc_client');
+  localStorage.removeItem('ecc_user_type');
   render('login');
 }
 
@@ -261,6 +298,15 @@ async function loadDashboard() {
     const data = await api('GET', '/api/dealers/stats');
     const s = data.stats;
 
+    // Fetch pending deposit requests for admin/distributor dashboard
+    let pendingDeposits = [];
+    if (DEALER.is_admin || DEALER.role === 'distributor') {
+      try {
+        const depData = await api('GET', '/api/pricing/deposits');
+        pendingDeposits = (depData.requests || []).filter(r => r.status === 'pending');
+      } catch(e) {}
+    }
+
     if (DEALER.is_admin) {
       // ---- ADMIN WORK QUEUE VIEW ----
       main.innerHTML = `
@@ -284,6 +330,30 @@ async function loadDashboard() {
             </div>
           </div>
         </div>
+
+        ${pendingDeposits.length ? `
+        <div class="card" style="margin-bottom:20px;border-left:4px solid #ffb74d;">
+          <div class="card-header"><h3>💰 Pending Deposit Requests (${pendingDeposits.length})</h3></div>
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>Dealer</th><th>Amount</th><th>Requested</th><th>Notes</th><th>Actions</th></tr></thead>
+              <tbody>
+                ${pendingDeposits.map(r => `
+                  <tr>
+                    <td class="td-primary">${r.company_name || 'Unknown'}</td>
+                    <td style="font-weight:600;color:var(--primary);">$${r.amount.toFixed(2)}</td>
+                    <td>${formatDate(r.created_at)}</td>
+                    <td style="font-size:13px;">${r.notes || '—'}</td>
+                    <td style="white-space:nowrap;">
+                      <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="approveDeposit('${r.id}','${(r.company_name||'').replace(/'/g,"\\'")}',${r.amount})">Approve</button>
+                      <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="rejectDeposit('${r.id}','${(r.company_name||'').replace(/'/g,"\\'")}')">Reject</button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
 
         <div id="workQueueContainer">
           ${data.workQueue.length ? data.workQueue.map(o => {
@@ -372,7 +442,7 @@ async function loadDashboard() {
       }
 
     } else {
-      // ---- DEALER DASHBOARD VIEW ----
+      // ---- DEALER / DISTRIBUTOR DASHBOARD VIEW ----
       main.innerHTML = `
         <div class="page-header">
           <div>
@@ -384,6 +454,30 @@ async function loadDashboard() {
             <span class="credit-amount">$${(data.account_balance || 0).toFixed(2)}</span>
           </div>
         </div>
+
+        ${pendingDeposits.length && DEALER.role === 'distributor' ? `
+        <div class="card" style="margin-bottom:20px;border-left:4px solid #ffb74d;">
+          <div class="card-header"><h3>💰 Pending Deposit Requests (${pendingDeposits.length})</h3></div>
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>Dealer</th><th>Amount</th><th>Requested</th><th>Notes</th><th>Actions</th></tr></thead>
+              <tbody>
+                ${pendingDeposits.map(r => `
+                  <tr>
+                    <td class="td-primary">${r.company_name || 'Unknown'}</td>
+                    <td style="font-weight:600;color:var(--primary);">$${r.amount.toFixed(2)}</td>
+                    <td>${formatDate(r.created_at)}</td>
+                    <td style="font-size:13px;">${r.notes || '—'}</td>
+                    <td style="white-space:nowrap;">
+                      <button class="btn btn-primary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="approveDeposit('${r.id}','${(r.company_name||'').replace(/'/g,"\\'")}',${r.amount})">Approve</button>
+                      <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 10px;" onclick="rejectDeposit('${r.id}','${(r.company_name||'').replace(/'/g,"\\'")}')">Reject</button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
 
         <div class="stats-grid">
           <div class="stat-card stat-primary">
@@ -674,6 +768,15 @@ async function loadNewTune() {
                 <input type="tel" class="form-control" id="newClientPhone">
               </div>
             </div>
+            <div style="margin-top:12px;padding:12px;background:var(--bg-hover);border-radius:8px;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="newClientEnableLogin">
+                <span>Enable client portal login</span>
+              </label>
+              <p style="font-size:12px;color:var(--text-muted);margin-top:4px;">
+                If enabled, the client can log in with their email. Requires email. A temporary password will be generated (firstname + 123).
+              </p>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('newClientModal')">Cancel</button>
@@ -782,14 +885,20 @@ function bindTuneForm() {
   document.getElementById('btnSaveClient').addEventListener('click', async () => {
     const first = document.getElementById('newClientFirst').value.trim();
     const last = document.getElementById('newClientLast').value.trim();
+    const email = document.getElementById('newClientEmail').value.trim();
+    const phone = document.getElementById('newClientPhone').value.trim();
+    const enableLogin = document.getElementById('newClientEnableLogin').checked;
+
     if (!first || !last) return toast('First and last name required', 'error');
+    if (enableLogin && !email) return toast('Email is required to enable client login', 'error');
 
     try {
       const data = await api('POST', '/api/clients', {
         first_name: first,
         last_name: last,
-        email: document.getElementById('newClientEmail').value.trim(),
-        phone: document.getElementById('newClientPhone').value.trim()
+        email,
+        phone,
+        enable_login: enableLogin
       });
 
       // Add to select and choose it
@@ -801,7 +910,12 @@ function bindTuneForm() {
       select.appendChild(opt);
 
       closeModal('newClientModal');
-      toast('Client created!', 'success');
+
+      if (data.login_enabled) {
+        toast(`Client created! Login: ${email} / ${data.temp_password}`, 'success');
+      } else {
+        toast('Client created!', 'success');
+      }
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -1388,13 +1502,33 @@ async function loadClientDetail(clientId) {
         </div>
       </div>` : ''}
 
-      <div style="margin-top:20px">
+      <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-secondary" onclick="navigate('clients')">← Back to Clients</button>
+        ${c.email && !c.has_login ? `<button class="btn btn-primary" onclick="enableClientLogin('${c.id}','${c.first_name}','${c.email}')">🔑 Enable Client Login</button>` : ''}
+        ${c.has_login ? `<button class="btn btn-secondary" onclick="resetClientPassword('${c.id}','${c.first_name} ${c.last_name}')">🔄 Reset Password</button>` : ''}
+        ${c.has_login ? `<span style="color:#81c784;font-size:13px;display:flex;align-items:center;">✓ Client login enabled</span>` : ''}
       </div>
     `;
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
   }
+}
+
+async function enableClientLogin(clientId, firstName, email) {
+  if (!confirm('Enable login for this client? They will be able to log in with their email and a temporary password (' + firstName.toLowerCase() + '123).')) return;
+  try {
+    const data = await api('PUT', '/api/clients/' + clientId + '/enable-login');
+    toast('Login enabled! Temp password: ' + data.temp_password, 'success');
+    loadClientDetail(clientId);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function resetClientPassword(clientId, clientName) {
+  if (!confirm('Reset password for ' + clientName + '? A new temporary password will be generated.')) return;
+  try {
+    const data = await api('PUT', '/api/clients/' + clientId + '/reset-password');
+    toast('Password reset! New temp password: ' + data.temp_password, 'success');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ---- VEHICLES ----
@@ -2601,5 +2735,384 @@ function formatTuneType(type) {
   return types[type] || type;
 }
 
+// ======================================
+// ---- CLIENT PORTAL ----
+// ======================================
+
+function renderClientLayout(page) {
+  const c = CLIENT_USER;
+  return `
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <img src="/images/ecc-logo.png" alt="ECC" class="logo" onerror="this.style.display='none'">
+          <span class="brand-text">ECC Client Portal</span>
+        </div>
+        <nav class="nav-menu" id="clientNav">
+          <div class="nav-section">
+            <div class="nav-section-title">My Account</div>
+            <div class="nav-item ${page === 'portal-dashboard' ? 'active' : ''}" data-page="portal-dashboard">
+              <span class="nav-icon">📊</span> Dashboard
+            </div>
+            <div class="nav-item ${page === 'portal-orders' || page === 'portal-order-detail' ? 'active' : ''}" data-page="portal-orders">
+              <span class="nav-icon">📋</span> My Orders
+            </div>
+            <div class="nav-item ${page === 'portal-vehicles' ? 'active' : ''}" data-page="portal-vehicles">
+              <span class="nav-icon">🚗</span> My Vehicles
+            </div>
+            <div class="nav-item ${page === 'portal-settings' ? 'active' : ''}" data-page="portal-settings">
+              <span class="nav-icon">⚙️</span> Settings
+            </div>
+          </div>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="user-info">
+            <div class="user-name">${c.first_name} ${c.last_name}</div>
+            <div class="user-email">${c.email}</div>
+          </div>
+          <button class="btn-logout" onclick="logout()">Sign Out</button>
+        </div>
+      </aside>
+      <main class="main-content" id="mainContent">
+        <div class="empty-state"><span class="spinner"></span></div>
+      </main>
+    </div>
+  `;
+}
+
+function bindClientSidebar(currentPage) {
+  document.querySelectorAll('#clientNav .nav-item').forEach(item => {
+    item.addEventListener('click', () => navigate(item.dataset.page));
+  });
+}
+
+async function loadPortalDashboard() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/portal/dashboard');
+    const s = data.stats;
+    const c = data.client;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Welcome, ${c.first_name}!</h1>
+          <p class="page-subtitle">Your tuning dashboard${data.dealer ? ' — serviced by ' + data.dealer.company_name : ''}</p>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-value">${s.total_orders}</div><div class="stat-label">Total Orders</div></div>
+        <div class="stat-card"><div class="stat-value">${s.pending_orders}</div><div class="stat-label">In Progress</div></div>
+        <div class="stat-card"><div class="stat-value">${s.completed_orders}</div><div class="stat-label">Completed</div></div>
+        <div class="stat-card"><div class="stat-value">${s.total_vehicles}</div><div class="stat-label">Vehicles</div></div>
+      </div>
+
+      ${data.orders.length ? `
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>Recent Orders</h3></div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr><th>Order #</th><th>Vehicle</th><th>Tune Type</th><th>Status</th><th>Date</th></tr>
+            </thead>
+            <tbody>
+              ${data.orders.slice(0, 5).map(o => `
+                <tr class="clickable" onclick="navigate('portal-order-detail', {id:'${o.id}'})">
+                  <td class="td-primary">${o.order_number}</td>
+                  <td>${o.year || ''} ${o.make || ''} ${o.model || ''}</td>
+                  <td>${formatTuneType(o.tune_type)}</td>
+                  <td><span class="badge badge-${o.status}">${o.status.replace('_', ' ')}</span></td>
+                  <td>${formatDate(o.created_at)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : `
+      <div class="card" style="margin-top:20px">
+        <div class="empty-state">
+          <div class="empty-icon">📋</div>
+          <h3>No orders yet</h3>
+          <p>Your dealer will submit tune requests on your behalf. Orders will appear here.</p>
+        </div>
+      </div>`}
+
+      ${data.vehicles.length ? `
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>My Vehicles</h3></div>
+        <div class="card-body">
+          ${data.vehicles.map(v => `
+            <div style="padding:10px 0;border-bottom:1px solid var(--border);">
+              <strong>${v.year || ''} ${v.make || ''} ${v.model || ''}</strong><br>
+              <span class="text-muted" style="font-size:13px;">VIN: ${v.vin || '—'} | Engine: ${v.engine || '—'} | ECU: ${v.ecu_type || '—'}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      ${data.dealer ? `
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>Your Dealer</h3></div>
+        <div class="card-body">
+          <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Shop</div><div class="detail-value">${data.dealer.company_name}</div></div>
+            <div class="detail-item"><div class="detail-label">Phone</div><div class="detail-value">${data.dealer.phone || '—'}</div></div>
+            <div class="detail-item"><div class="detail-label">Email</div><div class="detail-value">${data.dealer.email || '—'}</div></div>
+          </div>
+        </div>
+      </div>` : ''}
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+async function loadPortalOrders() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/portal/orders');
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">My Orders</h1>
+          <p class="page-subtitle">${data.orders.length} tune orders</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrapper">
+          ${data.orders.length ? `
+          <table>
+            <thead>
+              <tr><th>Order #</th><th>Vehicle</th><th>Tune Type</th><th>Status</th><th>Dealer</th><th>Date</th></tr>
+            </thead>
+            <tbody>
+              ${data.orders.map(o => `
+                <tr class="clickable" onclick="navigate('portal-order-detail', {id:'${o.id}'})">
+                  <td class="td-primary">${o.order_number}</td>
+                  <td>${o.year || ''} ${o.make || ''} ${o.model || ''}</td>
+                  <td>${formatTuneType(o.tune_type)}</td>
+                  <td><span class="badge badge-${o.status}">${o.status.replace('_', ' ')}</span></td>
+                  <td>${o.dealer_name}</td>
+                  <td>${formatDate(o.created_at)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : `
+          <div class="empty-state">
+            <div class="empty-icon">📋</div>
+            <h3>No orders yet</h3>
+            <p>Your dealer will submit tune requests on your behalf.</p>
+          </div>`}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+async function loadPortalOrderDetail(orderId) {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', `/api/portal/orders/${orderId}`);
+    const o = data.order;
+    const files = data.files || [];
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Order ${o.order_number}</h1>
+          <p class="page-subtitle">${o.year || ''} ${o.make || ''} ${o.model || ''} — ${formatTuneType(o.tune_type)}</p>
+        </div>
+        <span class="badge badge-${o.status}" style="font-size:14px;padding:8px 16px;">${o.status.replace('_', ' ')}</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <div class="card">
+          <div class="card-header"><h3>Order Details</h3></div>
+          <div class="card-body">
+            <div class="detail-grid">
+              <div class="detail-item"><div class="detail-label">Vehicle</div><div class="detail-value">${o.year || ''} ${o.make || ''} ${o.model || ''}</div></div>
+              <div class="detail-item"><div class="detail-label">VIN</div><div class="detail-value">${o.vin || '—'}</div></div>
+              <div class="detail-item"><div class="detail-label">Engine</div><div class="detail-value">${o.engine || '—'}</div></div>
+              <div class="detail-item"><div class="detail-label">ECU</div><div class="detail-value">${o.ecu_type || '—'}</div></div>
+              <div class="detail-item"><div class="detail-label">Tune Type</div><div class="detail-value">${formatTuneType(o.tune_type)}</div></div>
+              <div class="detail-item"><div class="detail-label">Dealer</div><div class="detail-value">${o.dealer_name}</div></div>
+              <div class="detail-item"><div class="detail-label">Submitted</div><div class="detail-value">${formatDate(o.created_at)}</div></div>
+              ${o.completed_at ? `<div class="detail-item"><div class="detail-label">Completed</div><div class="detail-value">${formatDate(o.completed_at)}</div></div>` : ''}
+            </div>
+            ${o.notes ? `<div style="margin-top:12px;padding:12px;background:var(--bg-hover);border-radius:8px;"><strong>Notes:</strong> ${o.notes}</div>` : ''}
+            ${o.admin_notes ? `<div style="margin-top:8px;padding:12px;background:var(--bg-hover);border-radius:8px;"><strong>ECC Notes:</strong> ${o.admin_notes}</div>` : ''}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3>Files</h3></div>
+          <div class="card-body">
+            ${o.stock_file_name ? `
+              <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                <div><strong>Stock File:</strong> ${o.stock_file_name}</div>
+                <button class="btn btn-secondary btn-sm" onclick="downloadFile('/api/tunes/${o.id}/download/stock', '${o.stock_file_name}')">Download</button>
+              </div>` : ''}
+            ${o.tuned_file_name ? `
+              <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                <div><strong>Tuned File:</strong> ${o.tuned_file_name}</div>
+                <button class="btn btn-primary btn-sm" onclick="downloadFile('/api/tunes/${o.id}/download/tuned', '${o.tuned_file_name}')">Download</button>
+              </div>` : `
+              <p class="text-muted" style="padding:10px 0;">Tuned file not yet available</p>
+            `}
+
+            ${files.length ? `
+              <div style="margin-top:12px;"><strong>Additional Files:</strong></div>
+              ${files.map(f => `
+                <div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                  <div style="font-size:13px;">${f.file_name} <span class="text-muted">(${f.file_type || 'file'})</span></div>
+                  <button class="btn btn-secondary btn-sm" onclick="downloadFile('/api/portal/orders/${o.id}/files/${f.id}/download', '${f.file_name}')">Download</button>
+                </div>
+              `).join('')}
+            ` : ''}
+
+            <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+              <strong style="font-size:13px;">Upload a File (logs, data, etc.)</strong>
+              <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+                <input type="file" id="clientUploadFile" class="form-control" style="flex:1;">
+                <select id="clientFileType" class="form-control" style="width:120px;">
+                  <option value="log">Log File</option>
+                  <option value="data">Data File</option>
+                  <option value="stock">Stock Read</option>
+                  <option value="other">Other</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="uploadClientFile('${o.id}')">Upload</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px">
+        <button class="btn btn-secondary" onclick="navigate('portal-orders')">← Back to Orders</button>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+async function uploadClientFile(orderId) {
+  const fileInput = document.getElementById('clientUploadFile');
+  const fileType = document.getElementById('clientFileType').value;
+
+  if (!fileInput.files.length) return toast('Select a file to upload', 'error');
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('file_type', fileType);
+
+  try {
+    await api('POST', `/api/portal/orders/${orderId}/upload`, formData, true);
+    toast('File uploaded successfully!', 'success');
+    loadPortalOrderDetail(orderId);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function loadPortalVehicles() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/portal/vehicles');
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">My Vehicles</h1>
+          <p class="page-subtitle">${data.vehicles.length} registered vehicles</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrapper">
+          ${data.vehicles.length ? `
+          <table>
+            <thead>
+              <tr><th>Vehicle</th><th>VIN</th><th>Engine</th><th>ECU</th><th>Orders</th></tr>
+            </thead>
+            <tbody>
+              ${data.vehicles.map(v => `
+                <tr>
+                  <td class="td-primary">${v.year || ''} ${v.make || ''} ${v.model || ''}</td>
+                  <td style="font-family:monospace;font-size:12px;">${v.vin || '—'}</td>
+                  <td>${v.engine || '—'} ${v.engine_code ? '(' + v.engine_code + ')' : ''}</td>
+                  <td>${v.ecu_type || '—'}</td>
+                  <td>${v.order_count || 0}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : `
+          <div class="empty-state">
+            <div class="empty-icon">🚗</div>
+            <h3>No vehicles yet</h3>
+            <p>Your dealer will register your vehicles when submitting tune requests.</p>
+          </div>`}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
+async function loadPortalSettings() {
+  const main = document.getElementById('mainContent');
+  try {
+    const data = await api('GET', '/api/auth/me');
+    const c = data.client;
+
+    main.innerHTML = `
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Settings</h1>
+          <p class="page-subtitle">Manage your account</p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header"><h3>Your Information</h3></div>
+        <div class="card-body">
+          <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Name</div><div class="detail-value">${c.first_name} ${c.last_name}</div></div>
+            <div class="detail-item"><div class="detail-label">Email</div><div class="detail-value">${c.email}</div></div>
+            <div class="detail-item"><div class="detail-label">Phone</div><div class="detail-value">${c.phone || '—'}</div></div>
+            <div class="detail-item"><div class="detail-label">Dealer</div><div class="detail-value">${c.dealer_name || '—'}</div></div>
+            <div class="detail-item"><div class="detail-label">Member Since</div><div class="detail-value">${formatDate(c.created_at)}</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>Change Password</h3></div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Current Password</label>
+              <input type="password" class="form-control" id="currentPassword">
+            </div>
+            <div class="form-group">
+              <label>New Password</label>
+              <input type="password" class="form-control" id="newPassword">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="changePassword()">Update Password</button>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${err.message}</p></div>`;
+  }
+}
+
 // ---- INIT ----
-render('dashboard');
+render(USER_TYPE === 'client' ? 'portal-dashboard' : 'dashboard');

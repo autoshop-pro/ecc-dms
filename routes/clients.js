@@ -1,4 +1,5 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { getDb } = require('../database');
 const { authenticateToken } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
@@ -66,7 +67,8 @@ router.get('/:id', authenticateToken, (req, res) => {
   const dealer = req.dealer;
 
   const client = db.prepare(`
-    SELECT c.*, d.company_name as created_by_company, cd.company_name as current_dealer_company
+    SELECT c.*, d.company_name as created_by_company, cd.company_name as current_dealer_company,
+      CASE WHEN c.password_hash IS NOT NULL THEN 1 ELSE 0 END as has_login
     FROM clients c
     LEFT JOIN dealers d ON c.created_by_dealer_id = d.id
     LEFT JOIN dealers cd ON c.current_dealer_id = cd.id
@@ -74,6 +76,9 @@ router.get('/:id', authenticateToken, (req, res) => {
   `).get(req.params.id);
 
   if (!client) return res.status(404).json({ error: 'Client not found' });
+
+  // Don't expose the actual password hash to the frontend
+  delete client.password_hash;
 
   // Access check
   if (dealer.role === 'dealer' && client.current_dealer_id !== dealer.id) {
@@ -114,23 +119,107 @@ router.get('/:id', authenticateToken, (req, res) => {
 });
 
 // POST /api/clients - create new client (assigned to creating dealer)
+// If enable_login=true and email is provided, sets up client with a temporary password
 router.post('/', authenticateToken, (req, res) => {
-  const { first_name, last_name, email, phone, notes } = req.body;
+  const { first_name, last_name, email, phone, notes, enable_login, temp_password } = req.body;
 
   if (!first_name || !last_name) {
     return res.status(400).json({ error: 'First and last name are required' });
   }
 
   const db = getDb();
+  const dealerId = req.dealer ? req.dealer.id : (req.client ? req.client.current_dealer_id : null);
+
+  // If enabling login, email is required
+  if (enable_login && !email) {
+    return res.status(400).json({ error: 'Email is required to enable client login' });
+  }
+
+  // Check for duplicate email if provided
+  if (email) {
+    const existingClient = db.prepare('SELECT id FROM clients WHERE LOWER(email) = LOWER(?)').get(email.trim());
+    if (existingClient) {
+      return res.status(400).json({ error: 'A client with this email already exists' });
+    }
+    // Also check dealer emails
+    const existingDealer = db.prepare('SELECT id FROM dealers WHERE LOWER(email) = LOWER(?)').get(email.trim());
+    if (existingDealer) {
+      return res.status(400).json({ error: 'This email is already registered as a dealer account' });
+    }
+  }
+
   const id = uuidv4();
+  let passwordHash = null;
+
+  if (enable_login && email) {
+    // Generate a temp password or use the one provided
+    const password = temp_password || (first_name.toLowerCase().replace(/\s/g, '') + '123');
+    passwordHash = bcrypt.hashSync(password, 10);
+  }
 
   db.prepare(`
-    INSERT INTO clients (id, first_name, last_name, email, phone, notes, created_by_dealer_id, current_dealer_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, first_name, last_name, email || null, phone || null, notes || null, req.dealer.id, req.dealer.id);
+    INSERT INTO clients (id, first_name, last_name, email, phone, notes, password_hash, created_by_dealer_id, current_dealer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, first_name, last_name, email || null, phone || null, notes || null, passwordHash, dealerId, dealerId);
 
   const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(id);
-  res.status(201).json({ client });
+  const response = { client };
+
+  if (enable_login && email) {
+    response.login_enabled = true;
+    response.temp_password = temp_password || (first_name.toLowerCase().replace(/\s/g, '') + '123');
+    response.message = `Client can now log in with email: ${email} and the temporary password. They should change it on first login.`;
+  }
+
+  res.status(201).json(response);
+});
+
+// PUT /api/clients/:id/enable-login - enable login for an existing client
+router.put('/:id/enable-login', authenticateToken, (req, res) => {
+  const db = getDb();
+  const { temp_password } = req.body;
+
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+
+  if (!client.email) {
+    return res.status(400).json({ error: 'Client must have an email address to enable login' });
+  }
+
+  if (client.password_hash) {
+    return res.status(400).json({ error: 'Client login is already enabled' });
+  }
+
+  const password = temp_password || (client.first_name.toLowerCase().replace(/\s/g, '') + '123');
+  const hash = bcrypt.hashSync(password, 10);
+
+  db.prepare("UPDATE clients SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, client.id);
+
+  res.json({
+    message: `Login enabled. Temporary password: ${password}`,
+    temp_password: password
+  });
+});
+
+// PUT /api/clients/:id/reset-password - reset client password (dealer action)
+router.put('/:id/reset-password', authenticateToken, (req, res) => {
+  if (req.userType === 'client') {
+    return res.status(403).json({ error: 'Only dealers can reset client passwords' });
+  }
+
+  const db = getDb();
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+
+  const password = client.first_name.toLowerCase().replace(/\s/g, '') + '123';
+  const hash = bcrypt.hashSync(password, 10);
+
+  db.prepare("UPDATE clients SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, client.id);
+
+  res.json({
+    message: `Password reset. New temporary password: ${password}`,
+    temp_password: password
+  });
 });
 
 // PUT /api/clients/:id - update client info

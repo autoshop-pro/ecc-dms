@@ -44,7 +44,7 @@ function initializeDatabase() {
       FOREIGN KEY (parent_dealer_id) REFERENCES dealers(id)
     );
 
-    -- Clients table (dealer-owned with transfer support)
+    -- Clients table (dealer-owned with transfer support + client login)
     CREATE TABLE IF NOT EXISTS clients (
       id TEXT PRIMARY KEY,
       first_name TEXT NOT NULL,
@@ -52,6 +52,8 @@ function initializeDatabase() {
       email TEXT,
       phone TEXT,
       notes TEXT,
+      password_hash TEXT,
+      is_active INTEGER DEFAULT 1,
       created_by_dealer_id TEXT,
       current_dealer_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
@@ -256,11 +258,17 @@ function initializeDatabase() {
     }
   }
 
-  // Migration: add current_dealer_id to clients if missing
+  // Migration: add columns to clients if missing
   const clientCols = db.prepare("PRAGMA table_info(clients)").all().map(c => c.name);
   if (!clientCols.includes('current_dealer_id')) {
     db.exec("ALTER TABLE clients ADD COLUMN current_dealer_id TEXT");
     db.exec("UPDATE clients SET current_dealer_id = created_by_dealer_id WHERE current_dealer_id IS NULL");
+  }
+  if (!clientCols.includes('password_hash')) {
+    db.exec("ALTER TABLE clients ADD COLUMN password_hash TEXT");
+  }
+  if (!clientCols.includes('is_active')) {
+    db.exec("ALTER TABLE clients ADD COLUMN is_active INTEGER DEFAULT 1");
   }
 
   const hwCols = db.prepare("PRAGMA table_info(hardware_products)").all().map(c => c.name);

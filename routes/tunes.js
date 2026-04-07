@@ -286,8 +286,13 @@ router.get('/:id/download/:type', authenticateToken, (req, res) => {
 
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  // Access check: admin always, dealer for own orders, distributor for sub-dealer orders
-  if (!req.dealer.is_admin && order.dealer_id !== req.dealer.id) {
+  // Access check: admin always, dealer for own orders, distributor for sub-dealer orders, client for own orders
+  if (req.userType === 'client') {
+    // Client can only download files for their own orders
+    if (order.client_id !== req.client.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+  } else if (!req.dealer.is_admin && order.dealer_id !== req.dealer.id) {
     if (req.dealer.role === 'distributor') {
       const subDealer = db.prepare('SELECT id FROM dealers WHERE id = ? AND parent_dealer_id = ?').get(order.dealer_id, req.dealer.id);
       if (!subDealer) return res.status(403).json({ error: 'Access denied' });
@@ -300,9 +305,10 @@ router.get('/:id/download/:type', authenticateToken, (req, res) => {
   if (fileType === 'stock' && order.stock_file_path) {
     return res.download(order.stock_file_path, order.stock_file_name);
   } else if (fileType === 'tuned' && order.tuned_file_path) {
-    // Gate tuned file download behind payment (admin always has access)
-    if (!req.dealer.is_admin && order.price > 0 && !order.is_paid) {
-      return res.status(402).json({ error: 'Payment required before downloading tuned file. Please pay from your order details page.' });
+    // Gate tuned file download behind payment (admin always has access, clients can download if paid by dealer)
+    const isAdmin = req.dealer && req.dealer.is_admin;
+    if (!isAdmin && order.price > 0 && !order.is_paid) {
+      return res.status(402).json({ error: 'Payment required before downloading tuned file.' });
     }
     return res.download(order.tuned_file_path, order.tuned_file_name);
   }

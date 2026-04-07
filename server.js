@@ -23,6 +23,7 @@ app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/tunes', require('./routes/tunes'));
 app.use('/api/hardware', require('./routes/hardware'));
 app.use('/api/pricing', require('./routes/pricing'));
+app.use('/api/portal', require('./routes/client-portal'));
 
 // Serve frontend for all non-API routes
 app.get('/{*splat}', (req, res) => {
